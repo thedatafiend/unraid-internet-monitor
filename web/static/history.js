@@ -68,11 +68,12 @@ export async function mount(root, ctx) {
     const step = pickStep(to - from);
     const shown = state.target === 'all' ? targets : targets.filter(t => String(t.id) === state.target);
     body.classList.add('loading');
-    let metrics, events;
+    let metrics, events, tests;
     try {
-      [metrics, events] = await Promise.all([
+      [metrics, events, tests] = await Promise.all([
         Promise.all(shown.map(t => getJSON(`/api/metrics?target=${t.id}&from=${from}&to=${to}&step=${step}`))),
         getJSON(`/api/events?from=${from}&to=${to}`),
+        getJSON(`/api/speedtests?from=${from}&to=${to}`).catch(() => []),
       ]);
     } catch (err) {
       body.classList.remove('loading');
@@ -80,11 +81,11 @@ export async function mount(root, ctx) {
       return;
     }
     if (seq !== loadSeq || ctx.gone()) return;
-    render(from, to, step, shown, metrics, events);
+    render(from, to, step, shown, metrics, events, tests);
     body.classList.remove('loading');
   }
 
-  function render(from, to, step, shown, metrics, events) {
+  function render(from, to, step, shown, metrics, events, tests) {
     charts.forEach(c => c.destroy());
     charts = [];
 
@@ -97,11 +98,16 @@ export async function mount(root, ctx) {
     const critical = cssVar('--critical'), warning = cssVar('--warning');
     const outages = events.filter(e => e.kind === 'outage' && e.scope === 'ip4');
     const degraded = events.filter(e => e.kind === 'degraded');
+    // Speed tests saturate the line on purpose; mark them so their latency
+    // spike isn't mistaken for a problem.
+    const muted = cssVar('--muted');
     const shadeIvs = [
+      ...tests.map(t => ({ start: t.ts, end: t.ts + Math.max(t.duration_s, 1), color: alpha(muted, 0.22) })),
       ...degraded.map(e => ({ start: e.started_at, end: e.ended_at ?? now(), color: alpha(warning, 0.18) })),
       ...outages.map(e => ({ start: e.started_at, end: e.ended_at ?? now(), color: alpha(critical, 0.16) })),
     ];
-    fill(shadeLegend, 
+    fill(shadeLegend,
+      ...(tests.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(muted, 0.4) } }), `Speed test (${tests.length})`)] : []),
       ...(outages.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(critical, 0.35) } }), `Outage (${outages.length})`)] : []),
       ...(degraded.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(warning, 0.45) } }), `Degraded (${degraded.length})`)] : []));
 

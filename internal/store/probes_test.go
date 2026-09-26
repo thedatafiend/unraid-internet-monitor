@@ -79,3 +79,24 @@ func TestTraces(t *testing.T) {
 		t.Fatalf("recent = %+v", recent)
 	}
 }
+
+func TestSpeedTests(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if latest, err := s.LatestSpeedTest(ctx); err != nil || latest != nil {
+		t.Fatalf("empty: %v %v", latest, err)
+	}
+	a := &model.SpeedTest{TS: 100, Trigger: "scheduled", DownMbps: f(940.5), UpMbps: f(38.2), IdleMs: f(18), LoadedDownMs: f(25), Grade: "A", BytesDown: 1 << 30, Server: "DEN"}
+	b := &model.SpeedTest{TS: 200, Trigger: "manual", Error: "download: timeout"}
+	if err := s.InsertSpeedTest(ctx, a); err != nil || a.ID == 0 {
+		t.Fatalf("insert: %v", err)
+	}
+	s.InsertSpeedTest(ctx, b)
+	all, _ := s.SpeedTests(ctx, 0, 1000)
+	if len(all) != 2 || all[0].ID != b.ID || all[0].DownMbps != nil || all[1].Grade != "A" || *all[1].DownMbps != 940.5 || all[1].LoadedUpMs != nil {
+		t.Fatalf("results = %+v", all)
+	}
+	if latest, _ := s.LatestSpeedTest(ctx); latest.ID != b.ID {
+		t.Fatalf("latest = %+v", latest)
+	}
+}

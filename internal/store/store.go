@@ -85,6 +85,24 @@ var migrations = []string{
 	);
 	CREATE INDEX traces_ts ON traces(ts);
 	CREATE INDEX traces_event ON traces(event_id);`,
+
+	`CREATE TABLE speedtests (
+		id             INTEGER PRIMARY KEY,
+		ts             INTEGER NOT NULL,
+		trigger        TEXT NOT NULL,
+		down_mbps      REAL,
+		up_mbps        REAL,
+		idle_ms        REAL,
+		loaded_down_ms REAL,
+		loaded_up_ms   REAL,
+		grade          TEXT NOT NULL DEFAULT '',
+		bytes_down     INTEGER NOT NULL DEFAULT 0,
+		bytes_up       INTEGER NOT NULL DEFAULT 0,
+		server         TEXT NOT NULL DEFAULT '',
+		duration_s     REAL NOT NULL DEFAULT 0,
+		error          TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX speedtests_ts ON speedtests(ts);`,
 }
 
 // Store wraps the SQLite database.
@@ -308,6 +326,7 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 		`DELETE FROM events WHERE ended_at IS NOT NULL AND ended_at < ?`,
 		`DELETE FROM http_sample WHERE ts < ?`,
 		`DELETE FROM traces WHERE ts < ?`,
+		`DELETE FROM speedtests WHERE ts < ?`,
 		// Keep the newest public IP row so a change after a long gap is still detected.
 		`DELETE FROM public_ip WHERE ts < ? AND ts < (SELECT max(ts) FROM public_ip)`,
 	} {

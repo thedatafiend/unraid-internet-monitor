@@ -59,12 +59,20 @@ type Config struct {
 	HTTPTimeout      time.Duration
 	PublicIPInterval time.Duration // 0 disables
 
+	// Speed test.
+	SpeedtestSchedule string // daily "HH:MM" local time, or "off"
+	SpeedtestDuration time.Duration
+	SpeedtestStreams  int
+	SpeedtestURL      string // Cloudflare-compatible __down/__up server
+
 	// Alerts.
 	DiscordWebhookURL string
 	AlertMinOutage    time.Duration
 	AlertCoalesce     time.Duration
 	AlertISPHopChange bool
 	AlertIPChange     bool
+	AlertMinDownMbps  float64 // 0 = off
+	AlertMinUpMbps    float64 // 0 = off
 }
 
 // Defaults returns the configuration used when no environment variables are set.
@@ -95,6 +103,11 @@ func Defaults() Config {
 		HTTPInterval:     time.Minute,
 		HTTPTimeout:      10 * time.Second,
 		PublicIPInterval: 5 * time.Minute,
+
+		SpeedtestSchedule: "04:00",
+		SpeedtestDuration: 10 * time.Second,
+		SpeedtestStreams:  6,
+		SpeedtestURL:      "https://speed.cloudflare.com",
 
 		AlertMinOutage: 30 * time.Second,
 		AlertCoalesce:  5 * time.Minute,
@@ -188,6 +201,24 @@ func Load(getenv func(string) string) (Config, error) {
 	duration("HTTP_INTERVAL", &c.HTTPInterval, 10*time.Second)
 	duration("HTTP_TIMEOUT", &c.HTTPTimeout, time.Second)
 	duration("PUBLIC_IP_INTERVAL", &c.PublicIPInterval, 0)
+	str("SPEEDTEST_SCHEDULE", &c.SpeedtestSchedule)
+	duration("SPEEDTEST_DURATION", &c.SpeedtestDuration, 3*time.Second)
+	integer("SPEEDTEST_STREAMS", &c.SpeedtestStreams, 1)
+	str("SPEEDTEST_URL", &c.SpeedtestURL)
+	c.SpeedtestURL = strings.TrimRight(c.SpeedtestURL, "/")
+	float("ALERT_MIN_DOWN_MBPS", &c.AlertMinDownMbps, 0)
+	float("ALERT_MIN_UP_MBPS", &c.AlertMinUpMbps, 0)
+
+	c.SpeedtestSchedule = strings.ToLower(c.SpeedtestSchedule)
+	if c.SpeedtestSchedule != Off {
+		var h, m int
+		if _, err := fmt.Sscanf(c.SpeedtestSchedule, "%d:%d", &h, &m); err != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+			fail("SPEEDTEST_SCHEDULE", fmt.Errorf("want HH:MM (24-hour) or off, got %q", c.SpeedtestSchedule))
+		}
+	}
+	if c.SpeedtestStreams > 32 {
+		fail("SPEEDTEST_STREAMS", fmt.Errorf("at most 32"))
+	}
 
 	for _, v := range []*[]string{&c.DNSServers, &c.HTTPTargets} {
 		if len(*v) == 1 && strings.EqualFold((*v)[0], Off) {

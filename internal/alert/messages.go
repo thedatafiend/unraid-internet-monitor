@@ -44,6 +44,7 @@ const (
 	KindDigest          = "digest"
 	KindISPHopChange    = "isp_hop_change"
 	KindIPChange        = "ip_change"
+	KindSpeedLow        = "speed_low"
 	KindTest            = "test"
 )
 
@@ -199,6 +200,29 @@ func ipChanged(oldIP, newIP string, now int64) Message {
 		Color:       colorBlue,
 		Time:        now,
 	}
+}
+
+func speedLow(res model.SpeedTest, minDown, minUp float64, now int64) Message {
+	val := func(p *float64) string {
+		if p == nil {
+			return "–"
+		}
+		return fmt.Sprintf("%.0f Mbps", *p)
+	}
+	m := Message{
+		Title:       "🟠 Slow speed test",
+		Description: fmt.Sprintf("The speed test at %s came in below your minimum.", ts(res.TS, "t")),
+		Color:       colorAmber,
+		Fields: []Field{
+			{Name: "Download", Value: val(res.DownMbps) + fmt.Sprintf(" (min %.0f)", minDown), Inline: true},
+			{Name: "Upload", Value: val(res.UpMbps) + fmt.Sprintf(" (min %.0f)", minUp), Inline: true},
+		},
+		Time: now,
+	}
+	if res.Grade != "" {
+		m.Fields = append(m.Fields, Field{Name: "Bufferbloat", Value: res.Grade, Inline: true})
+	}
+	return m
 }
 
 func testMessage(now int64) Message {

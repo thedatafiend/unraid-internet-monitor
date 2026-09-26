@@ -25,6 +25,8 @@ type Config struct {
 	Coalesce     time.Duration // alerts of one kind within this window are merged into a digest
 	ISPHopChange bool          // alert when the ISP edge router changes
 	IPChange     bool          // alert when the public IP address changes
+	MinDownMbps  float64       // alert when a speed test is slower (0 = off)
+	MinUpMbps    float64
 }
 
 // Sender delivers one message.
@@ -178,6 +180,21 @@ func (m *Manager) PublicIPChanged(oldIP, newIP string, now int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.enqueue(KindIPChange, ipChanged(oldIP, newIP, now), now)
+}
+
+// SpeedTestResult alerts when a test falls below the configured minimums.
+func (m *Manager) SpeedTestResult(res model.SpeedTest, now int64) {
+	if !m.Enabled() {
+		return
+	}
+	slowDown := m.cfg.MinDownMbps > 0 && res.DownMbps != nil && *res.DownMbps < m.cfg.MinDownMbps
+	slowUp := m.cfg.MinUpMbps > 0 && res.UpMbps != nil && *res.UpMbps < m.cfg.MinUpMbps
+	if !slowDown && !slowUp {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enqueue(KindSpeedLow, speedLow(res, m.cfg.MinDownMbps, m.cfg.MinUpMbps, now), now)
 }
 
 // Test queues a test message.

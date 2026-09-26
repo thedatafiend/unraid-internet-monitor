@@ -72,11 +72,12 @@ func TestLoadErrors(t *testing.T) {
 		"HTTP_TARGETS":         "ftp://example.com",
 		"DNS_SERVERS":          "dns.google",
 		"PUBLIC_IP_INTERVAL":   "10s",
+		"SPEEDTEST_SCHEDULE":   "4am",
 	}))
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE", "HTTP_TARGETS", "DNS_SERVERS", "PUBLIC_IP_INTERVAL"} {
+	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE", "HTTP_TARGETS", "DNS_SERVERS", "PUBLIC_IP_INTERVAL", "SPEEDTEST_SCHEDULE"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %s", err, key)
 		}

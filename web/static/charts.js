@@ -4,6 +4,19 @@ import { h, cssVar, fmt, fill } from './util.js';
 
 const FONT = '12px system-ui, -apple-system, "Segoe UI", sans-serif';
 
+// fitAxis sizes the y-axis to its widest label so none are clipped.
+function fitAxis(u, values, axisIdx, cycleNum) {
+  const axis = u.axes[axisIdx];
+  if (cycleNum > 1) return axis._size;
+  let size = axis.ticks.size + axis.gap + 4;
+  const longest = (values || []).reduce((a, v) => (v.length > a.length ? v : a), '');
+  if (longest) {
+    u.ctx.font = axis.font[0];
+    size += u.ctx.measureText(longest).width / devicePixelRatio;
+  }
+  return Math.ceil(size);
+}
+
 export function alpha(color, a) {
   const m = /^#([0-9a-f]{6})$/i.exec(color);
   if (!m) return color;
@@ -97,6 +110,9 @@ export function timeChart(el, opts) {
       _color: s.color,
       tipHide: s.tipHide,
     };
+    if (s.points) { // sparse series (one point per speed test): show the markers
+      def.points = { show: true, size: 8, width: 2, fill: s.color, stroke: surface };
+    }
     if (s.bars) {
       def.paths = uPlot.paths.bars({ size: [0.7, 24], align: 1 }); // a bucket starts at its timestamp
       def.fill = s.color;
@@ -143,7 +159,7 @@ export function timeChart(el, opts) {
       { stroke: muted, font: FONT, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1, size: 4 }, space: 70 },
       {
         stroke: muted, font: FONT, grid: { stroke: grid, width: 1 }, ticks: { show: false },
-        size: 56, space: 36, values: (u, vals) => vals.map(yFmt),
+        size: fitAxis, space: 36, values: (u, vals) => vals.map(yFmt),
       },
     ],
     cursor: {

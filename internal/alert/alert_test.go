@@ -305,3 +305,16 @@ func TestPublicIPChangeAlert(t *testing.T) {
 		t.Fatalf("sent %v", titles(snd.sent))
 	}
 }
+
+func TestSpeedTestAlert(t *testing.T) {
+	m, snd, now := newTestManager(t)
+	fv := func(v float64) *float64 { return &v }
+	m.SpeedTestResult(model.SpeedTest{TS: now.Unix(), DownMbps: fv(50), UpMbps: fv(5)}, now.Unix()) // thresholds off
+	m.cfg.MinDownMbps, m.cfg.MinUpMbps = 100, 10
+	m.SpeedTestResult(model.SpeedTest{TS: now.Unix(), DownMbps: fv(900), UpMbps: fv(40)}, now.Unix()) // fine
+	m.SpeedTestResult(model.SpeedTest{TS: now.Unix(), DownMbps: fv(50), UpMbps: fv(40), Grade: "C"}, now.Unix())
+	m.Deliver(context.Background())
+	if len(snd.sent) != 1 || snd.sent[0].Title != "🟠 Slow speed test" || snd.sent[0].Fields[0].Value != "50 Mbps (min 100)" {
+		t.Fatalf("sent %+v", snd.sent)
+	}
+}

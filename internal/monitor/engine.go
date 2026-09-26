@@ -16,6 +16,7 @@ import (
 	"github.com/thedatafiend/unraid-internet-monitor/internal/detect"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/probe"
+	"github.com/thedatafiend/unraid-internet-monitor/internal/speedtest"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/store"
 )
 
@@ -42,20 +43,23 @@ type Engine struct {
 	svc     *services
 	http    *probe.HTTPProber
 	ipf     *probe.IPFetcher
+	speed   *speedtest.Runner
 
 	lastTick atomic.Int64
 
-	mu       sync.RWMutex
-	targets  []model.Target
-	rings    map[int64]*aggregate.Ring
-	info     Info
-	detState detect.Snapshot
+	mu            sync.RWMutex
+	targets       []model.Target
+	rings         map[int64]*aggregate.Ring
+	info          Info
+	detState      detect.Snapshot
+	runCtx        context.Context // set by Run; manual speed tests use it
+	nextSpeedtest int64
 }
 
 // New creates an engine. p6 may be nil.
 func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert.Manager, log *slog.Logger) *Engine {
 	grace := int64(cfg.PingTimeout/time.Second) + 2
-	return &Engine{
+	e := &Engine{
 		cfg: cfg, p4: p4, p6: p6, st: st, log: log, alerts: alerts,
 		minutes:  aggregate.NewMinutes(grace),
 		det:      detect.New(detectConfig(cfg)),
@@ -67,6 +71,8 @@ func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert
 		rings:    make(map[int64]*aggregate.Ring),
 		detState: detect.Snapshot{State: detect.StateUnknown},
 	}
+	e.speed = newSpeedRunner(cfg, e)
+	return e
 }
 
 // Run probes until ctx is cancelled, then flushes pending rollups.
@@ -81,6 +87,9 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	e.prune(ctx)
 
+	e.mu.Lock()
+	e.runCtx = ctx
+	e.mu.Unlock()
 	if p, err := e.st.LatestPublicIP(ctx); err == nil {
 		e.svc.pubIP = p
 	}
@@ -99,6 +108,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 			every(ctx, e.cfg.PublicIPInterval, func(t time.Time) { e.ipCheck(ctx, t) })
 		},
+		func() { e.speedLoop(ctx) },
 	}
 	wg.Add(len(loops))
 	for _, l := range loops {
@@ -376,6 +386,7 @@ type Status struct {
 	Targets    []TargetStatus  `json:"targets"`  // ping targets
 	Services   []ServiceStatus `json:"services"` // DNS and web targets
 	PublicIP   model.PublicIP  `json:"public_ip"`
+	Speedtest  SpeedStatus     `json:"speedtest"`
 	Info       Info            `json:"info"`
 }
 
@@ -387,7 +398,8 @@ func (e *Engine) Status(now time.Time) Status {
 	snap := e.detState
 	e.mu.RUnlock()
 	st := Status{Now: now.Unix(), State: snap.State, Since: snap.Since, OpenEvents: snap.Open, Info: e.Info(),
-		PublicIP: e.PublicIP(), Targets: []TargetStatus{}, Services: []ServiceStatus{}}
+		PublicIP: e.PublicIP(), Targets: []TargetStatus{}, Services: []ServiceStatus{},
+		Speedtest: e.speedStatus(context.Background())}
 	if st.OpenEvents == nil {
 		st.OpenEvents = []model.Event{}
 	}

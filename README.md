@@ -1,33 +1,141 @@
 # unraid-internet-monitor
 
-A lightweight Docker app for Unraid that continuously measures internet connection
-quality to your ISP and beyond. It tracks latency, jitter, packet loss and outages,
-keeps 30 days of history, and serves a web UI you can reach on your LAN and over
-Tailscale.
+A lightweight Docker app for Unraid that continuously measures the quality of your
+internet connection. It tracks latency, jitter, packet loss, outages, DNS and web
+response times, and daily speed. It keeps 30 days of history, sends Discord alerts,
+and serves a web UI you can reach on your LAN and over Tailscale.
 
-The design is in [docs/PLAN.md](docs/PLAN.md).
+The design and milestone history are in [docs/PLAN.md](docs/PLAN.md).
 
-**Status:** M5 is done. The app pings your router, your ISP's edge router and
-public resolvers once a second. It times DNS lookups (every 30 s) and a fresh
-HTTPS request (every minute, split into DNS, connect, TLS and server time), and
-tracks your public IP address. It detects outages (and says whether the break is
-your LAN, your ISP's connection, or further upstream), slowdowns, and DNS or web
-failures while ping still works. When an outage starts, it records the route so
-you can see where packets stopped. It keeps 30 days of history in SQLite and sends
-Discord alerts.
+**What it does**
 
-The web UI has four pages:
+- Pings your router, your ISP's edge router and three public resolvers **once a
+  second**.
+- Times a DNS lookup every 30 s and a fresh HTTPS request every minute (split
+  into DNS, connect, TLS and server time), and tracks your public IP address.
+- Runs a **daily speed test** (plus on demand) that also measures how much
+  latency rises while the line is full, and grades the bufferbloat.
+- Detects **outages**, and says whether the break is your LAN, your ISP's
+  connection or further upstream. It also detects slowdowns, and DNS or web
+  failures while ping still works. When an outage starts, it records the route so
+  you can see where packets stopped.
 
-- **Dashboard:** live state, uptime, latency, loss, call quality (MOS), a live
-  15-minute chart, per-target stats and recent events.
-- **History:** 1 hour to 30 days of latency, packet loss and jitter, with outages
-  shaded. Drag across a chart to zoom in, pick one target for its median/p95 band,
-  or switch to a table view.
-- **Events:** every outage and slowdown, with uptime and downtime totals.
+The web UI has five pages:
+
+- **Dashboard:** live state, uptime, latency, loss, call quality (MOS), last speed
+  test, a live 15-minute chart, per-target stats, DNS and web checks, and recent
+  events.
+- **History:** 1 hour to 30 days of latency, packet loss, jitter and DNS/web
+  response time. Outages, slowdowns and speed tests are shaded. Drag to zoom, pick
+  one target for its median/p95 band, or switch to a table.
+- **Events:** every outage, slowdown and change, with uptime totals and the
+  route recorded when each outage started.
+- **Speed:** results over time, latency under load, a **Run now** button and a
+  results table.
 - **Settings:** the discovered route, the configuration and a Discord test button.
 
-The UI follows your light or dark theme and works on a phone. Everything is served
-from the container itself, so it keeps working while your internet is down.
+The UI follows your light or dark theme and works on a phone. It is served from
+the container itself, so it keeps working while your internet is down.
+
+## How it works
+
+```mermaid
+flowchart TB
+    subgraph outside["What gets measured"]
+        direction LR
+        router["Your router"]
+        ispedge["ISP edge router"]
+        inet["Internet targets<br/>1.1.1.1 · 8.8.8.8 · 9.9.9.9"]
+        resolvers["DNS resolvers<br/>system · 1.1.1.1"]
+        webcheck["Web check<br/>google.com/generate_204"]
+        cloudflare["Cloudflare<br/>speed test · public IP"]
+    end
+
+    subgraph app["internet-monitor container (host network on Unraid)"]
+        subgraph probes["Probes"]
+            direction LR
+            icmp["Ping<br/>every second"]
+            dnsprobe["DNS lookup<br/>every 30 s"]
+            httpprobe["HTTPS request<br/>every minute"]
+            ipcheck["Public IP<br/>every 5 min"]
+            speed["Speed test<br/>daily + Run now"]
+            trace["Traceroute<br/>hourly + outage start"]
+        end
+        agg["Aggregator<br/>1 h live buffer · per-minute rollups"]
+        detector["Detector<br/>outage · degraded · partial"]
+        db[("SQLite · /data/monitor.db<br/>rollups · events · speed tests · routes<br/>30-day retention")]
+        alerts["Alert manager<br/>outbox · retry · digests"]
+        api["HTTP server<br/>JSON API · live stream · web UI"]
+    end
+
+    router & ispedge & inet -.- icmp
+    resolvers -.- dnsprobe
+    webcheck -.- httpprobe
+    cloudflare -.- ipcheck & speed
+
+    icmp & dnsprobe & httpprobe --> agg
+    agg --> detector
+    agg -- "once a minute" --> db
+    detector -- events --> db
+    trace & ipcheck & speed --> db
+    detector --> alerts
+    db --> api
+    agg -- "live, every second" --> api
+    alerts --> discord["Discord<br/>webhook"]
+    api --> browser["Your browser<br/>LAN · Tailscale"]
+```
+
+- **Probes** run on their own schedules. Ping uses a single raw ICMP socket, opened
+  as root before the app drops to `99:100`. It sends one burst per second to every
+  target and matches replies by sequence number. The web and speed checks never use
+  a proxy, because the point is to measure this connection.
+- **Aggregator** keeps the last hour per second in memory for the live chart. It
+  rolls results up into per-minute min/avg/p50/p95/p99/max, jitter and loss, which
+  are written to SQLite in one transaction a minute.
+- **Detector** is a pure state machine over each second's results. It opens and
+  closes outage, degraded and single-target events. Events, speed tests, routes and
+  public-IP changes are stored next to the rollups, and anything older than the
+  retention period is pruned hourly.
+- **Alert manager** turns events into Discord messages through a persistent
+  outbox. An alert raised while the internet is down is delivered (or replaced by
+  the recovery message) once it comes back.
+- **HTTP server** serves the JSON API, a server-sent-events stream for the live
+  chart, and the dashboard. The dashboard is plain JavaScript with uPlot, embedded
+  in the binary.
+
+### How outages are classified
+
+```mermaid
+flowchart LR
+    server["Unraid server"] --> router["Your router"] --> ispedge["ISP edge router"] --> inet["Internet<br/>1.1.1.1 · 8.8.8.8 · 9.9.9.9"]
+```
+
+An outage starts when **every** internet target has been silent for 3 seconds. The
+monitor then looks at the hops in between for the rest of the outage:
+
+| Router | ISP edge | Likely cause shown |
+|---|---|---|
+| silent | – | **Your router or LAN** (router, modem, cabling, power) |
+| answers | silent | **Your ISP's connection** |
+| answers | answers | **ISP network or beyond** |
+
+Only one or two internet targets failing is recorded as a *target unreachable*
+event, not an outage. DNS or web checks failing three times in a row while ping
+still works get their own *DNS failing* / *Web check failing* events.
+
+### Speed tests
+
+The daily test (04:00 local time plus a random 0–10 min delay, or on demand) runs
+against Cloudflare's speed test service. Each direction uses 6 parallel connections
+for 10 seconds, and the first 2 seconds are ignored so TCP slow start doesn't drag
+the number down. Upload is counted from bytes the server has **acknowledged**
+(Linux `TCP_INFO`), not bytes handed to the socket, which would overstate it.
+
+While each direction runs, the monitor pings 1.1.1.1 five times a second and compares
+the result with the idle latency measured just before. The increase gives the
+**bufferbloat grade**: A+ (< 5 ms), A (< 30), B (< 60), C (< 200), D (< 400), F.
+A daily test on a 1 Gbps line uses about 2.5 GB (≈ 75 GB a month). The data used
+is recorded with each result.
 
 ## Install on Unraid
 
@@ -100,6 +208,7 @@ What you get:
 - **Flapping:** several outages in quick succession are batched into one digest
   instead of a burst of messages.
 - **Public IP change:** the old and new address (turn off with `ALERT_IP_CHANGE=false`).
+- **Slow speed test:** when a result is below `ALERT_MIN_DOWN_MBPS` / `ALERT_MIN_UP_MBPS` (off by default).
 
 ## Configuration
 
@@ -131,12 +240,16 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `HTTP_TARGETS` | `https://www.google.com/generate_204` | URLs fetched over a fresh connection; `off` disables |
 | `HTTP_INTERVAL` / `HTTP_TIMEOUT` | `1m` / `10s` | |
 | `PUBLIC_IP_INTERVAL` | `5m` | `0` disables |
+| `SPEEDTEST_SCHEDULE` | `04:00` | Daily time (local, 24-hour) or `off` for manual tests only. Set `TZ` (Unraid does this for you) |
+| `SPEEDTEST_DURATION` / `SPEEDTEST_STREAMS` | `10s` / `6` | Per direction |
+| `SPEEDTEST_URL` | `https://speed.cloudflare.com` | Any server with Cloudflare's `__down` / `__up` API |
+| `ALERT_MIN_DOWN_MBPS` / `ALERT_MIN_UP_MBPS` | `0` (off) | Alert when a speed test is slower |
 
 ## API
 
 | Endpoint | |
 |---|---|
-| `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime, MOS, per-target 60 s stats, discovery info and warnings |
+| `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime, MOS, per-target 60 s stats, DNS/web checks, public IP, last and next speed test, discovery info and warnings |
 | `GET /api/events?from=&to=&kind=` | Outages, partial failures, degradations and ISP-hop changes (default: last 7 days) |
 | `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count and longest outage (default: last 24 h) |
 | `POST /api/alerts/test` | Send a test Discord message |
@@ -146,6 +259,9 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `GET /api/traces?event_id=` | Traceroutes: the one taken when an outage started, or recent ones |
 | `GET /api/public-ip` | Public IP history (newest first) |
 | `GET /api/http?target=ID` | Web-check phase timings (DNS, connect, TLS, server) |
+| `GET /api/speedtests` | Speed test results (newest first) |
+| `POST /api/speedtest` | Start a speed test (409 if one is already running) |
+| `GET /api/speedtest/progress` | Phase and live throughput of a running test |
 | `GET /api/stream` | Server-sent events: one message per second with every target's RTT and the current state |
 | `GET /api/config` | Effective settings (the webhook URL is reported only as set or unset) |
 | `GET /healthz` | 200 once probes are running. Used by the Docker healthcheck |

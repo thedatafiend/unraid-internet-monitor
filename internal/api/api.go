@@ -57,6 +57,9 @@ func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.
 	mux.HandleFunc("GET /api/traces", s.traces)
 	mux.HandleFunc("GET /api/public-ip", s.publicIPs)
 	mux.HandleFunc("GET /api/http", s.httpSamples)
+	mux.HandleFunc("GET /api/speedtests", s.speedtests)
+	mux.HandleFunc("POST /api/speedtest", s.runSpeedtest)
+	mux.HandleFunc("GET /api/speedtest/progress", s.speedProgress)
 	mux.Handle("GET /", web.Handler())
 	return mux
 }
@@ -242,12 +245,17 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		"http_targets":         c.HTTPTargets,
 		"http_interval_s":      secs(c.HTTPInterval),
 		"public_ip_interval_s": secs(c.PublicIPInterval),
+		"speedtest_schedule":   c.SpeedtestSchedule,
+		"speedtest_duration_s": secs(c.SpeedtestDuration),
+		"speedtest_streams":    c.SpeedtestStreams,
 		"alerts": map[string]any{
 			"discord":        c.DiscordWebhookURL != "",
 			"min_outage_s":   secs(c.AlertMinOutage),
 			"coalesce_s":     secs(c.AlertCoalesce),
 			"isp_hop_change": c.AlertISPHopChange,
 			"ip_change":      c.AlertIPChange,
+			"min_down_mbps":  c.AlertMinDownMbps,
+			"min_up_mbps":    c.AlertMinUpMbps,
 		},
 	})
 }
@@ -316,6 +324,32 @@ func (s *Server) httpSamples(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, samples)
+}
+
+func (s *Server) speedtests(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.rangeParams(r, int64(s.retention)*86400)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+	res, err := s.st.SpeedTests(r.Context(), from, to)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, res)
+}
+
+func (s *Server) runSpeedtest(w http.ResponseWriter, r *http.Request) {
+	if err := s.eng.RunSpeedtest(); err != nil {
+		httpError(w, err, http.StatusConflict)
+		return
+	}
+	writeJSONCode(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+func (s *Server) speedProgress(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.eng.SpeedProgress())
 }
 
 func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {

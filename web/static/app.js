@@ -4,8 +4,9 @@ import * as dashboard from './dashboard.js';
 import * as history from './history.js';
 import * as events from './events.js';
 import * as settings from './settings.js';
+import * as speed from './speed.js';
 
-const routes = { '': dashboard, history, events, settings };
+const routes = { '': dashboard, history, events, speed, settings };
 const view = document.getElementById('view');
 let unmount = null;
 let generation = 0;

@@ -55,6 +55,8 @@ export async function mount(root, ctx) {
           : 'Off'],
         ['Web checks', cfg.http_targets.length ? `${cfg.http_targets.join(', ')} every ${fmt.dur(cfg.http_interval_s)}` : 'Off'],
         ['Public IP check', cfg.public_ip_interval_s ? `every ${fmt.dur(cfg.public_ip_interval_s)}` : 'Off'],
+        ['Speed test', cfg.speedtest_schedule === 'off' ? 'Manual only'
+          : `daily at ${cfg.speedtest_schedule} (+ up to 10 min), ${cfg.speedtest_duration_s} s each way, ${cfg.speedtest_streams} connections`],
         ['Outage after', `${cfg.outage_threshold_s} s with no internet target answering`],
         ['Degraded when', `loss ≥ ${cfg.degraded_loss_pct}% or p95 > ${cfg.degraded_p95_ms} ms for ${fmt.dur(cfg.degraded_min_s)}`],
         ['Retention', `${cfg.retention_days} days`],
@@ -71,6 +73,8 @@ export async function mount(root, ctx) {
         ['Batch repeated alerts within', fmt.dur(cfg.alerts.coalesce_s)],
         ['Alert on ISP route changes', yes(cfg.alerts.isp_hop_change)],
         ['Alert on public IP changes', yes(cfg.alerts.ip_change)],
+        ['Alert on slow speed tests', cfg.alerts.min_down_mbps || cfg.alerts.min_up_mbps
+          ? `below ${cfg.alerts.min_down_mbps || '–'} down / ${cfg.alerts.min_up_mbps || '–'} up Mbps` : 'Off'],
       ]),
       h('div', { class: 'filters' }, testBtn, testResult))),
   );

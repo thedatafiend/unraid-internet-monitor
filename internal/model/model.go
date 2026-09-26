@@ -168,3 +168,21 @@ type PublicIP struct {
 	IPv4 string `json:"ipv4,omitempty"`
 	IPv6 string `json:"ipv6,omitempty"`
 }
+
+// SpeedTest is one throughput measurement with latency under load.
+type SpeedTest struct {
+	ID           int64    `json:"id"`
+	TS           int64    `json:"ts"`
+	Trigger      string   `json:"trigger"` // scheduled | manual
+	DownMbps     *float64 `json:"down_mbps"`
+	UpMbps       *float64 `json:"up_mbps"`
+	IdleMs       *float64 `json:"idle_ms"`
+	LoadedDownMs *float64 `json:"loaded_down_ms"`
+	LoadedUpMs   *float64 `json:"loaded_up_ms"`
+	Grade        string   `json:"grade,omitempty"` // bufferbloat grade A+..F
+	BytesDown    int64    `json:"bytes_down"`
+	BytesUp      int64    `json:"bytes_up"`
+	Server       string   `json:"server,omitempty"` // Cloudflare location, e.g. DEN
+	DurationS    float64  `json:"duration_s"`
+	Error        string   `json:"error,omitempty"`
+}

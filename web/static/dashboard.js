@@ -5,6 +5,7 @@ import {
   loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState, targetAddress, kindOf,
 } from './util.js';
 import { timeChart, legend, sparkline } from './charts.js';
+import { gradeStatus, mbps } from './speed.js';
 
 const WINDOW = 900; // seconds of live data
 
@@ -32,6 +33,7 @@ export async function mount(root, ctx) {
     latency: tile('Latency to the internet'),
     loss: tile('Packet loss'),
     mos: tile('Call quality (MOS)'),
+    speed: tile('Last speed test'),
   };
   const kpis = h('section', { class: 'kpis' }, ...Object.values(tiles).map(t => t.el));
 
@@ -187,6 +189,19 @@ export async function mount(root, ctx) {
 
     setTile(tiles.mos, status.mos == null ? '–' : status.mos.toFixed(2),
       status.mos == null ? '' : `${mosLabel(status.mos)} · 1 (bad) to 4.5 (best)`);
+
+    const sp = status.speedtest || {};
+    if (sp.progress && sp.progress.running) {
+      setTile(tiles.speed, 'Running…', sp.progress.phase === 'latency' ? 'measuring idle latency' : `${sp.progress.phase} · ${mbps(sp.progress.mbps)}`);
+    } else if (sp.last && sp.last.down_mbps != null) {
+      const g = gradeStatus(sp.last.grade);
+      setTile(tiles.speed, `${Math.round(sp.last.down_mbps)} / ${Math.round(sp.last.up_mbps ?? 0)}`,
+        `Mbps down / up · ${fmt.datetime(sp.last.ts)}`,
+        g ? h('a', { href: '#/speed', class: 'name-cell secondary', style: { fontSize: '12px', marginTop: '6px' } }, statusIcon(g), `Bufferbloat ${sp.last.grade}`) : null);
+    } else {
+      setTile(tiles.speed, '–', sp.next_at ? 'first test ' + fmt.datetime(sp.next_at) : 'no tests yet',
+        h('a', { href: '#/speed', class: 'secondary', style: { fontSize: '12px' }, text: 'Run one now →' }));
+    }
 
     const warnings = status.info.warnings || [];
     warnBox.hidden = warnings.length === 0;

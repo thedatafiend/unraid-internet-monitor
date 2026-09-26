@@ -28,6 +28,8 @@ import (
 	"github.com/thedatafiend/unraid-internet-monitor/internal/monitor"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/probe"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/store"
+
+	_ "time/tzdata" // TZ works even if the image has no zoneinfo
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -124,7 +126,7 @@ func serve() error {
 	}
 	alerts := alert.NewManager(alert.Config{
 		MinOutage: cfg.AlertMinOutage, Coalesce: cfg.AlertCoalesce, ISPHopChange: cfg.AlertISPHopChange,
-		IPChange: cfg.AlertIPChange,
+		IPChange: cfg.AlertIPChange, MinDownMbps: cfg.AlertMinDownMbps, MinUpMbps: cfg.AlertMinUpMbps,
 	}, sender, st, log)
 	alertsDone := make(chan struct{})
 	go func() { defer close(alertsDone); alerts.Run(ctx) }()
