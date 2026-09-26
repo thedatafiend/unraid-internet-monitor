@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/aggregate"
@@ -52,6 +54,8 @@ func diag() error {
 	fmt.Printf("gateway:            %s (%s)\n", orNone(info.Gateway), orNone(info.GatewaySource))
 	fmt.Printf("ISP hop:            %s (%s)\n", orNone(info.ISPHop), orNone(info.ISPHopSource))
 	fmt.Printf("IPv6:               mode=%s available=%v\n", info.IPv6Mode, info.IPv6Available)
+
+	printNetworkView()
 
 	if len(info.Trace) > 0 {
 		fmt.Printf("\ntraceroute to %s:\n", cfg.PingTargets[0])
@@ -115,4 +119,41 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// printNetworkView shows which network namespace the process sees, to tell
+// host networking apart from a bridged or otherwise isolated container.
+func printNetworkView() {
+	if ns, err := os.Readlink("/proc/self/ns/net"); err == nil {
+		fmt.Printf("network namespace:  %s (compare with `readlink /proc/self/ns/net` on the host)\n", ns)
+	}
+	fmt.Println("\ninterfaces:")
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		fmt.Println("  error:", err)
+	}
+	for _, ifc := range ifaces {
+		addrs, _ := ifc.Addrs()
+		var list []string
+		for _, a := range addrs {
+			list = append(list, a.String())
+		}
+		fmt.Printf("  %-16s %s\n", ifc.Name, strings.Join(list, " "))
+	}
+	fmt.Println("\n/proc/net/route default entries:")
+	b, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		fmt.Println("  error:", err)
+		return
+	}
+	found := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(line); len(f) > 1 && f[1] == "00000000" {
+			fmt.Println(" ", strings.Join(f, " "))
+			found = true
+		}
+	}
+	if !found {
+		fmt.Println("  (none)")
+	}
 }

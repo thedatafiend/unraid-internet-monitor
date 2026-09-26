@@ -23,6 +23,14 @@ br0	0001A8C0	00000000	0001	0	0	0	00FFFFFF	0	0	0
 		t.Fatalf("got %+v", r)
 	}
 
+	// The line the kernel prints for "default via 192.168.68.1 dev br0 proto dhcp metric 1006".
+	const unraid = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"br0\t00000000\t0144A8C0\t0003\t0\t0\t1006\t00000000\t0\t0\t0\n"
+	r, err = parseRouteV4(strings.NewReader(unraid))
+	if err != nil || r.Gateway != netip.MustParseAddr("192.168.68.1") || r.Iface != "br0" {
+		t.Fatalf("unraid-style route: got %+v, %v", r, err)
+	}
+
 	if _, err := parseRouteV4(strings.NewReader("Iface\tDestination\n")); err == nil {
 		t.Fatal("expected error for table without default route")
 	}

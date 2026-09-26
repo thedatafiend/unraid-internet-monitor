@@ -135,9 +135,9 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 			break
 		}
 		if len(hops) > 0 && hops[0].Reached {
-			warn("a probe limited to 1 hop was answered by %s itself: something between this server and the internet "+
-				"(usually a Tailscale exit node or a VPN running in userspace) answers pings on the destination's behalf, "+
-				"so latency reflects that tunnel rather than your ISP, and the ISP hop cannot be found", internet4[0])
+			warn("a probe limited to 1 hop was answered by %s itself, so something in the path does not decrement TTL "+
+				"(a router with hardware NAT acceleration, or a tunnel/proxy answering pings on the destination's behalf). "+
+				"Pings are still valid, but the ISP hop cannot be found; set ISP_HOP to an IP or off", internet4[0])
 			break
 		}
 		hop := discover.PickISPHop(hops, gateway)
