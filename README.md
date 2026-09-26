@@ -149,6 +149,10 @@ CI (`.github/workflows/ci.yml`) checks formatting, runs `go vet` and the tests
 with the race detector, and then builds and pushes the multi-arch image. Pull
 requests only run the checks. To cut a release, push a tag such as `v1.0.0`.
 
+The first publish creates the GHCR package as **private**. Make it public once
+(**Package settings → Change visibility → Public**) so Unraid can pull it without
+credentials.
+
 Without root, the app falls back to unprivileged ping sockets when the host
 allows them (`net.ipv4.ping_group_range`). In that mode ISP-hop auto-detection is
 unavailable.
