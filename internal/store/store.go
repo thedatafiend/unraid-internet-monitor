@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"os"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
 
@@ -287,14 +288,19 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 	return n, nil
 }
 
-// SizeBytes returns the size of the main database file (excluding the WAL).
+// SizeBytes returns the on-disk size of the database, including the
+// write-ahead log (recent writes live there until a checkpoint).
 func (s *Store) SizeBytes(ctx context.Context) (int64, error) {
-	var pages, size int64
-	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pages); err != nil {
-		return 0, err
+	var total int64
+	for _, p := range []string{s.path, s.path + "-wal"} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return total, err
+		}
+		total += fi.Size()
 	}
-	if err := s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&size); err != nil {
-		return 0, err
-	}
-	return pages * size, nil
+	return total, nil
 }

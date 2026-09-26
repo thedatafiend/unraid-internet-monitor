@@ -38,6 +38,7 @@ type Engine struct {
 	alerts  *alert.Manager
 	det     *detect.Detector // owned by detectLoop
 	ticks   chan detect.Tick
+	live    *hub
 
 	lastTick atomic.Int64
 
@@ -56,6 +57,7 @@ func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert
 		minutes:  aggregate.NewMinutes(grace),
 		det:      detect.New(detectConfig(cfg)),
 		ticks:    make(chan detect.Tick, 16),
+		live:     newHub(),
 		rings:    make(map[int64]*aggregate.Ring),
 		detState: detect.Snapshot{State: detect.StateUnknown},
 	}
@@ -201,6 +203,7 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	tick := detect.Tick{TS: ts}
+	rtts := make(map[int64]*float64, len(targets))
 	for _, fam := range []struct {
 		name string
 		p    *probe.Pinger
@@ -228,10 +231,15 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 			for i, r := range results {
 				t := group[i]
 				e.record(t.ID, ts, r)
+				ms := r.RTT.Seconds() * 1000
 				tick.Samples = append(tick.Samples, detect.Sample{
 					TargetID: t.ID, Name: t.Name, Role: t.Role, Family: t.Family,
-					OK: r.OK, RTT: r.RTT.Seconds() * 1000,
+					OK: r.OK, RTT: ms,
 				})
+				rtts[t.ID] = nil
+				if r.OK {
+					rtts[t.ID] = &ms
+				}
 			}
 		}(fam.p)
 	}
@@ -240,6 +248,7 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 		return
 	}
 	e.lastTick.Store(time.Now().Unix())
+	e.publishLive(ts, rtts)
 	e.sendTick(ctx, tick)
 }
 

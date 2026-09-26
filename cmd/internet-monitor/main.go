@@ -130,9 +130,10 @@ func serve() error {
 
 	eng := monitor.New(cfg, p4, p6, st, alerts, log)
 	srv := &http.Server{
-		Handler:           api.New(eng, st, alerts, log, version, cfg.RetentionDays),
+		Handler:           api.New(eng, st, alerts, log, version, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	srv.RegisterOnShutdown(eng.CloseStreams) // live streams never end on their own
 	srvErr := make(chan error, 1)
 	go func() {
 		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {

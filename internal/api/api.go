@@ -3,7 +3,6 @@ package api
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,13 +13,12 @@ import (
 	"time"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/alert"
+	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/monitor"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/store"
+	"github.com/thedatafiend/unraid-internet-monitor/web"
 )
-
-//go:embed placeholder.html
-var placeholderHTML []byte
 
 const (
 	maxPoints     = 1000 // target points per series for /api/metrics
@@ -38,12 +36,13 @@ type Server struct {
 	log       *slog.Logger
 	version   string
 	retention int
+	cfg       config.Config
 	now       func() time.Time
 }
 
 // New returns the HTTP handler.
-func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.Logger, version string, retentionDays int) http.Handler {
-	s := &Server{eng: eng, st: st, alerts: alerts, log: log, version: version, retention: retentionDays, now: time.Now}
+func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.Logger, version string, cfg config.Config) http.Handler {
+	s := &Server{eng: eng, st: st, alerts: alerts, log: log, version: version, retention: cfg.RetentionDays, cfg: cfg, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /api/status", s.status)
@@ -53,10 +52,9 @@ func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("GET /api/uptime", s.uptimeHandler)
 	mux.HandleFunc("POST /api/alerts/test", s.testAlert)
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(placeholderHTML)
-	})
+	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("GET /api/config", s.config)
+	mux.Handle("GET /", web.Handler())
 	return mux
 }
 
@@ -175,6 +173,73 @@ func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error
 	pct := round3(100 * float64(u.MonitoredS-u.DowntimeS) / float64(u.MonitoredS))
 	u.UptimePct = &pct
 	return u, nil
+}
+
+// stream pushes a LiveTick per probe round as server-sent events.
+func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		httpError(w, errors.New("streaming unsupported"), http.StatusInternalServerError)
+		return
+	}
+	msgs, done, cancel := s.eng.Subscribe()
+	defer cancel()
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "retry: 3000\n\n")
+	fl.Flush()
+
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-done:
+			return
+		case m := <-msgs:
+			fmt.Fprintf(w, "data: %s\n\n", m)
+			fl.Flush()
+		case <-ping.C:
+			fmt.Fprint(w, ": ping\n\n")
+			fl.Flush()
+		}
+	}
+}
+
+// config shows the effective settings. The webhook URL is a secret and is
+// only reported as set or not.
+func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+	c := s.cfg
+	custom := []map[string]string{}
+	for _, t := range c.CustomTargets {
+		custom = append(custom, map[string]string{"name": t.Name, "host": t.Host})
+	}
+	secs := func(d time.Duration) float64 { return d.Seconds() }
+	writeJSON(w, map[string]any{
+		"retention_days":     c.RetentionDays,
+		"ping_interval_s":    secs(c.PingInterval),
+		"ping_timeout_s":     secs(c.PingTimeout),
+		"ping_targets":       c.PingTargets,
+		"ping_targets_v6":    c.PingTargetsV6,
+		"ipv6":               c.IPv6,
+		"gateway":            c.Gateway,
+		"isp_hop":            c.ISPHop,
+		"custom_targets":     custom,
+		"outage_threshold_s": secs(c.OutageThreshold),
+		"degraded_loss_pct":  c.DegradedLossPct,
+		"degraded_p95_ms":    c.DegradedP95Ms,
+		"degraded_min_s":     secs(c.DegradedMin),
+		"alerts": map[string]any{
+			"discord":        c.DiscordWebhookURL != "",
+			"min_outage_s":   secs(c.AlertMinOutage),
+			"coalesce_s":     secs(c.AlertCoalesce),
+			"isp_hop_change": c.AlertISPHopChange,
+		},
+	})
 }
 
 func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {

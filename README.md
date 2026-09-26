@@ -7,11 +7,23 @@ Tailscale.
 
 The design is in [docs/PLAN.md](docs/PLAN.md).
 
-**Status:** M2 is done. The app pings your router, your ISP's edge router and
+**Status:** M3 is done. The app pings your router, your ISP's edge router and
 public resolvers once a second. It detects outages (and says whether the break is
 your LAN, your ISP's connection, or further upstream), slowdowns, and single-target
-failures. It keeps 30 days of history in SQLite and sends Discord alerts. There is
-a temporary status page at `/`; the real dashboard comes next (M3).
+failures. It keeps 30 days of history in SQLite and sends Discord alerts.
+
+The web UI has four pages:
+
+- **Dashboard:** live state, uptime, latency, loss, call quality (MOS), a live
+  15-minute chart, per-target stats and recent events.
+- **History:** 1 hour to 30 days of latency, packet loss and jitter, with outages
+  shaded. Drag across a chart to zoom in, pick one target for its median/p95 band,
+  or switch to a table view.
+- **Events:** every outage and slowdown, with uptime and downtime totals.
+- **Settings:** the discovered route, the configuration and a Discord test button.
+
+The UI follows your light or dark theme and works on a phone. Everything is served
+from the container itself, so it keeps working while your internet is down.
 
 ## Try it on Unraid
 
@@ -116,6 +128,8 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `GET /api/targets` | All targets, including disabled ones that still have history |
 | `GET /api/metrics?target=ID&from=&to=&step=` | Stored per-minute history as parallel arrays, downsampled to at most 1000 points |
 | `GET /api/live?seconds=900` | Per-second RTTs from memory (up to 1 h) |
+| `GET /api/stream` | Server-sent events: one message per second with every target's RTT and the current state |
+| `GET /api/config` | Effective settings (the webhook URL is reported only as set or unset) |
 | `GET /healthz` | 200 once probes are running. Used by the Docker healthcheck |
 
 ## Development
