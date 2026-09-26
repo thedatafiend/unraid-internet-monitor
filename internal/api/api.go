@@ -2,8 +2,10 @@
 package api
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/thedatafiend/unraid-internet-monitor/internal/alert"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/monitor"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/store"
@@ -31,6 +34,7 @@ const (
 type Server struct {
 	eng       *monitor.Engine
 	st        *store.Store
+	alerts    *alert.Manager
 	log       *slog.Logger
 	version   string
 	retention int
@@ -38,14 +42,17 @@ type Server struct {
 }
 
 // New returns the HTTP handler.
-func New(eng *monitor.Engine, st *store.Store, log *slog.Logger, version string, retentionDays int) http.Handler {
-	s := &Server{eng: eng, st: st, log: log, version: version, retention: retentionDays, now: time.Now}
+func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.Logger, version string, retentionDays int) http.Handler {
+	s := &Server{eng: eng, st: st, alerts: alerts, log: log, version: version, retention: retentionDays, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/targets", s.targets)
 	mux.HandleFunc("GET /api/metrics", s.metrics)
 	mux.HandleFunc("GET /api/live", s.live)
+	mux.HandleFunc("GET /api/events", s.events)
+	mux.HandleFunc("GET /api/uptime", s.uptimeHandler)
+	mux.HandleFunc("POST /api/alerts/test", s.testAlert)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(placeholderHTML)
@@ -67,12 +74,119 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn("db size", "err", err)
 	}
+	now := s.now().Unix()
+	up, err := s.uptime(r.Context(), now-86400, now, now)
+	if err != nil {
+		s.log.Warn("uptime", "err", err)
+	}
 	writeJSON(w, struct {
 		monitor.Status
+		Uptime24h     uptime `json:"uptime_24h"`
+		AlertsEnabled bool   `json:"alerts_enabled"`
 		Version       string `json:"version"`
 		DBSizeBytes   int64  `json:"db_size_bytes"`
 		RetentionDays int    `json:"retention_days"`
-	}{s.eng.Status(s.now()), s.version, size, s.retention})
+	}{s.eng.Status(s.now()), up, s.alerts.Enabled(), s.version, size, s.retention})
+}
+
+// events lists events overlapping [from, to]; kind filters (optional).
+// Defaults to the last 7 days.
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	now := s.now().Unix()
+	to, err1 := intParam(q.Get("to"), now)
+	from, err2 := intParam(q.Get("from"), to-7*86400)
+	if err1 != nil || err2 != nil || from > to {
+		httpError(w, fmt.Errorf("from/to: want unix seconds with from <= to"), http.StatusBadRequest)
+		return
+	}
+	evs, err := s.st.Events(r.Context(), from, to, q.Get("kind"))
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, evs)
+}
+
+type uptime struct {
+	From       int64    `json:"from"`
+	To         int64    `json:"to"`
+	MonitoredS int64    `json:"monitored_s"` // part of the range with data
+	DowntimeS  int64    `json:"downtime_s"`
+	Outages    int      `json:"outages"`
+	UptimePct  *float64 `json:"uptime_pct"` // null before any data exists
+	LongestS   int64    `json:"longest_s"`
+	LastOutage *int64   `json:"last_outage_at"`
+}
+
+func (s *Server) uptimeHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	now := s.now().Unix()
+	to, err1 := intParam(q.Get("to"), now)
+	from, err2 := intParam(q.Get("from"), to-86400)
+	if err1 != nil || err2 != nil || from >= to {
+		httpError(w, fmt.Errorf("from/to: want unix seconds with from < to"), http.StatusBadRequest)
+		return
+	}
+	up, err := s.uptime(r.Context(), from, to, now)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, up)
+}
+
+// uptime computes IPv4 internet availability over [from, to] from outage
+// events, counting only the part of the range for which data exists.
+func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error) {
+	u := uptime{From: from, To: to}
+	first, err := s.st.FirstDataTS(ctx)
+	if err != nil || first == 0 {
+		return u, err
+	}
+	start := max(from, first)
+	end := min(to, now)
+	if end <= start {
+		return u, nil
+	}
+	u.MonitoredS = end - start
+	evs, err := s.st.Events(ctx, start, end, model.EventOutage)
+	if err != nil {
+		return u, err
+	}
+	for _, ev := range evs {
+		if ev.Scope != model.FamilyV4 {
+			continue
+		}
+		evEnd := now
+		if ev.EndedAt != nil {
+			evEnd = *ev.EndedAt
+		}
+		d := min(evEnd, end) - max(ev.StartedAt, start)
+		if d <= 0 {
+			continue
+		}
+		u.Outages++
+		u.DowntimeS += d
+		u.LongestS = max(u.LongestS, evEnd-ev.StartedAt)
+		started := ev.StartedAt
+		u.LastOutage = &started
+	}
+	pct := round3(100 * float64(u.MonitoredS-u.DowntimeS) / float64(u.MonitoredS))
+	u.UptimePct = &pct
+	return u, nil
+}
+
+func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
+	if err := s.alerts.Test(s.now().Unix()); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, alert.ErrDisabled) {
+			code = http.StatusConflict
+		}
+		httpError(w, err, code)
+		return
+	}
+	writeJSONCode(w, http.StatusAccepted, map[string]string{"status": "queued"})
 }
 
 func (s *Server) targets(w http.ResponseWriter, r *http.Request) {
@@ -225,14 +339,15 @@ func roundPtr(v *float64) *float64 {
 	return &r
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+func writeJSON(w http.ResponseWriter, v any) { writeJSONCode(w, http.StatusOK, v) }
+
+func writeJSONCode(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
 
 func httpError(w http.ResponseWriter, err error, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+	writeJSONCode(w, code, map[string]string{"error": err.Error()})
 }

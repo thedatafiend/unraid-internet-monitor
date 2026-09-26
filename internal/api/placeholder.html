@@ -5,58 +5,92 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Internet Monitor</title>
 <style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #ddd; --ok: #1a7f37; --bad: #cf222e; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #e6e6e6; --muted: #999; --line: #333; --ok: #3fb950; --bad: #f85149; } }
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #ddd;
+          --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --fg: #e6e6e6; --muted: #999; --line: #333; --ok: #3fb950; --warn: #d29922; --bad: #f85149; }
+  }
   body { margin: 0; padding: 16px; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
   h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 24px 0 4px; }
   .muted { color: var(--muted); }
-  .state { font-weight: 600; }
-  .online { color: var(--ok); } .offline { color: var(--bad); }
-  table { border-collapse: collapse; margin-top: 12px; width: 100%; max-width: 900px; }
+  .state { font-weight: 600; text-transform: capitalize; }
+  .online { color: var(--ok); } .degraded { color: var(--warn); } .outage { color: var(--bad); }
+  table { border-collapse: collapse; margin-top: 8px; width: 100%; max-width: 900px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .wrap { overflow-x: auto; }
   ul { padding-left: 20px; }
+  button { font: inherit; padding: 4px 10px; }
 </style>
 </head>
 <body>
 <h1>Internet Monitor</h1>
 <p class="muted">Temporary status page. The full dashboard arrives in milestone M3.
-  API: <a href="/api/status">/api/status</a> · <a href="/api/targets">/api/targets</a> · <a href="/api/live?seconds=60">/api/live</a></p>
-<p>State: <span id="state" class="state">…</span> · MOS: <span id="mos">–</span> · DB: <span id="db">–</span></p>
+  API: <a href="/api/status">status</a> · <a href="/api/events">events</a> · <a href="/api/uptime">uptime</a> · <a href="/api/live?seconds=60">live</a></p>
+<p>State: <span id="state" class="state">…</span> <span id="since" class="muted"></span>
+  · MOS: <span id="mos">–</span> · Uptime 24h: <span id="uptime">–</span> · DB: <span id="db">–</span></p>
+<p>Discord alerts: <span id="alerts">–</span> <button id="test" hidden>Send test alert</button> <span id="testResult" class="muted"></span></p>
 <div class="wrap">
 <table>
   <thead><tr><th>Target</th><th>Role</th><th>Address</th><th class="num">Last ms</th><th class="num">Avg 60s</th><th class="num">p95 60s</th><th class="num">Jitter</th><th class="num">Loss %</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 </div>
+<h2>Events (last 7 days)</h2>
+<div class="wrap">
+<table>
+  <thead><tr><th>Started</th><th>Kind</th><th>Scope</th><th>Cause</th><th class="num">Duration</th></tr></thead>
+  <tbody id="events"></tbody>
+</table>
+</div>
 <ul id="warnings" class="muted"></ul>
 <script>
 const fmt = v => v == null ? '–' : v.toFixed(1);
+const when = ts => new Date(ts * 1000).toLocaleString();
+const dur = s => s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+const cause = { local: 'Router / LAN', isp_edge: 'ISP connection', upstream: 'ISP network or beyond' };
+const cell = (tr, v, num) => { const td = document.createElement('td'); td.textContent = v; if (num) td.className = 'num'; tr.append(td); };
+
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json();
     const st = document.getElementById('state');
     st.textContent = s.state; st.className = 'state ' + s.state;
+    document.getElementById('since').textContent = s.since ? 'since ' + when(s.since) : '';
     document.getElementById('mos').textContent = s.mos == null ? '–' : s.mos.toFixed(2);
+    const up = s.uptime_24h.uptime_pct;
+    document.getElementById('uptime').textContent = up == null ? '–' : up.toFixed(2) + '% (' + s.uptime_24h.outages + ' outages)';
     document.getElementById('db').textContent = (s.db_size_bytes / 1048576).toFixed(1) + ' MB';
-    const rows = document.getElementById('rows');
-    rows.replaceChildren(...(s.targets || []).map(t => {
+    document.getElementById('alerts').textContent = s.alerts_enabled ? 'enabled' : 'off (set DISCORD_WEBHOOK_URL)';
+    document.getElementById('test').hidden = !s.alerts_enabled;
+    document.getElementById('rows').replaceChildren(...(s.targets || []).map(t => {
       const tr = document.createElement('tr');
       for (const [v, num] of [[t.name], [t.role], [t.address], [t.last_ok ? fmt(t.last_rtt) : 'lost', 1],
-                              [fmt(t.avg_60s), 1], [fmt(t.p95_60s), 1], [fmt(t.jitter_60s), 1], [t.loss_pct_60s.toFixed(1), 1]]) {
-        const td = document.createElement('td'); td.textContent = v; if (num) td.className = 'num'; tr.append(td);
-      }
+                              [fmt(t.avg_60s), 1], [fmt(t.p95_60s), 1], [fmt(t.jitter_60s), 1], [t.loss_pct_60s.toFixed(1), 1]]) cell(tr, v, num);
       return tr;
     }));
     document.getElementById('warnings').replaceChildren(...(s.info.warnings || []).map(w => {
       const li = document.createElement('li'); li.textContent = w; return li;
     }));
+
+    const evs = await (await fetch('/api/events')).json();
+    document.getElementById('events').replaceChildren(...evs.reverse().slice(0, 25).map(e => {
+      const tr = document.createElement('tr');
+      cell(tr, when(e.started_at)); cell(tr, e.kind); cell(tr, e.scope);
+      cell(tr, cause[e.class] || '');
+      cell(tr, e.ended_at == null ? 'ongoing' : dur(e.ended_at - e.started_at), 1);
+      return tr;
+    }));
   } catch (e) {
     document.getElementById('state').textContent = 'unreachable';
   }
 }
-refresh(); setInterval(refresh, 2000);
+document.getElementById('test').onclick = async () => {
+  const r = await fetch('/api/alerts/test', { method: 'POST' });
+  document.getElementById('testResult').textContent = r.ok ? 'queued — check Discord' : 'failed: ' + (await r.json()).error;
+};
+refresh(); setInterval(refresh, 3000);
 </script>
 </body>
 </html>

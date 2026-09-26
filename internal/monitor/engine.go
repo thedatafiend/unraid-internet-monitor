@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/aggregate"
+	"github.com/thedatafiend/unraid-internet-monitor/internal/alert"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
+	"github.com/thedatafiend/unraid-internet-monitor/internal/detect"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/probe"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/store"
@@ -23,7 +25,6 @@ const (
 	discoverEvery     = time.Hour
 	retentionEvery    = time.Hour
 	statusWindow      = 60 // seconds summarised per target in Status
-	onlineWindow      = 5  // seconds used for the provisional online/offline state
 	shutdownFlushWait = 5 * time.Second
 )
 
@@ -34,35 +35,48 @@ type Engine struct {
 	st      *store.Store
 	log     *slog.Logger
 	minutes *aggregate.Minutes
+	alerts  *alert.Manager
+	det     *detect.Detector // owned by detectLoop
+	ticks   chan detect.Tick
 
 	lastTick atomic.Int64
 
-	mu      sync.RWMutex
-	targets []model.Target
-	rings   map[int64]*aggregate.Ring
-	info    Info
+	mu       sync.RWMutex
+	targets  []model.Target
+	rings    map[int64]*aggregate.Ring
+	info     Info
+	detState detect.Snapshot
 }
 
 // New creates an engine. p6 may be nil.
-func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, log *slog.Logger) *Engine {
+func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert.Manager, log *slog.Logger) *Engine {
 	grace := int64(cfg.PingTimeout/time.Second) + 2
 	return &Engine{
-		cfg: cfg, p4: p4, p6: p6, st: st, log: log,
-		minutes: aggregate.NewMinutes(grace),
-		rings:   make(map[int64]*aggregate.Ring),
+		cfg: cfg, p4: p4, p6: p6, st: st, log: log, alerts: alerts,
+		minutes:  aggregate.NewMinutes(grace),
+		det:      detect.New(detectConfig(cfg)),
+		ticks:    make(chan detect.Tick, 16),
+		rings:    make(map[int64]*aggregate.Ring),
+		detState: detect.Snapshot{State: detect.StateUnknown},
 	}
 }
 
 // Run probes until ctx is cancelled, then flushes pending rollups.
 func (e *Engine) Run(ctx context.Context) error {
+	if n, err := e.st.CloseDanglingEvents(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		e.log.Info("closed events left open by the previous run", "count", n)
+	}
 	if err := e.rediscover(ctx); err != nil {
 		return err
 	}
 	e.prune(ctx)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); e.pingLoop(ctx) }()
+	go func() { defer wg.Done(); e.detectLoop(ctx) }()
 
 	flush := time.NewTicker(flushEvery)
 	disc := time.NewTicker(discoverEvery)
@@ -94,6 +108,17 @@ func (e *Engine) rediscover(ctx context.Context) error {
 	targets, info := Discover(ctx, e.cfg, e.p4, e.p6)
 	for _, w := range info.Warnings {
 		e.log.Warn(w)
+	}
+	stored, err := e.st.Targets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		for _, old := range stored {
+			if t.Role == model.RoleISP && old.Key == t.Key {
+				e.recordISPHopChange(ctx, old, t)
+			}
+		}
 	}
 	ids := make([]int64, 0, len(targets))
 	for i := range targets {
@@ -169,10 +194,13 @@ func (e *Engine) pingLoop(ctx context.Context) {
 	}
 }
 
-// probeOnce pings every enabled target once and records the results at ts.
+// probeOnce pings every enabled target once, records the results at ts and
+// passes the round to the outage detector.
 func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 	targets := e.Targets()
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	tick := detect.Tick{TS: ts}
 	for _, fam := range []struct {
 		name string
 		p    *probe.Pinger
@@ -195,13 +223,24 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 			if ctx.Err() != nil {
 				return // shutting down: a cancelled wait is not packet loss
 			}
+			mu.Lock()
+			defer mu.Unlock()
 			for i, r := range results {
-				e.record(group[i].ID, ts, r)
+				t := group[i]
+				e.record(t.ID, ts, r)
+				tick.Samples = append(tick.Samples, detect.Sample{
+					TargetID: t.ID, Name: t.Name, Role: t.Role, Family: t.Family,
+					OK: r.OK, RTT: r.RTT.Seconds() * 1000,
+				})
 			}
 		}(fam.p)
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
 	e.lastTick.Store(time.Now().Unix())
+	e.sendTick(ctx, tick)
 }
 
 func (e *Engine) record(targetID, ts int64, r probe.Result) {
@@ -282,22 +321,29 @@ type TargetStatus struct {
 
 // Status is the live overview served by /api/status.
 type Status struct {
-	Now     int64          `json:"now"`
-	State   string         `json:"state"` // online | offline | unknown (provisional until the outage detector lands)
-	MOS     *float64       `json:"mos"`
-	Targets []TargetStatus `json:"targets"`
-	Info    Info           `json:"info"`
+	Now        int64          `json:"now"`
+	State      string         `json:"state"` // unknown | online | degraded | outage
+	Since      int64          `json:"since"`
+	OpenEvents []model.Event  `json:"open_events"`
+	MOS        *float64       `json:"mos"`
+	Targets    []TargetStatus `json:"targets"`
+	Info       Info           `json:"info"`
 }
 
 // Status summarises the last minute of live data.
 func (e *Engine) Status(now time.Time) Status {
 	// Look at the last fully completed second: the current one may still be in flight.
 	end := now.Unix() - int64(e.cfg.PingTimeout/time.Second) - 1
-	st := Status{Now: now.Unix(), State: "unknown", Info: e.Info()}
+	e.mu.RLock()
+	snap := e.detState
+	e.mu.RUnlock()
+	st := Status{Now: now.Unix(), State: snap.State, Since: snap.Since, OpenEvents: snap.Open, Info: e.Info()}
+	if st.OpenEvents == nil {
+		st.OpenEvents = []model.Event{}
+	}
 
 	var mosSum float64
 	var mosN int
-	var internetSeen, internetOK bool
 	for _, t := range e.Targets() {
 		ring := e.Ring(t.ID)
 		if ring == nil {
@@ -320,11 +366,6 @@ func (e *Engine) Status(now time.Time) Status {
 			ts.MOS = round(aggregate.MOS(s.Avg, s.Jitter, s.LossPct()))
 		}
 		if t.Role == model.RoleInternet {
-			recent := ring.Summarize(end-onlineWindow+1, end)
-			if recent.Sent > 0 {
-				internetSeen = true
-				internetOK = internetOK || recent.Recv > 0
-			}
 			if ts.MOS != nil {
 				mosSum += *ts.MOS
 				mosN++
@@ -334,12 +375,6 @@ func (e *Engine) Status(now time.Time) Status {
 			}
 		}
 		st.Targets = append(st.Targets, ts)
-	}
-	switch {
-	case internetOK:
-		st.State = "online"
-	case internetSeen:
-		st.State = "offline"
 	}
 	if mosN > 0 {
 		st.MOS = round(mosSum / float64(mosN))

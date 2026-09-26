@@ -75,3 +75,40 @@ func TestMetricsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestUptime(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "u.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{st: st, log: slog.Default()}
+
+	if u, err := s.uptime(ctx, 0, 1000, 1000); err != nil || u.UptimePct != nil {
+		t.Fatalf("no data yet should give null uptime: %+v %v", u, err)
+	}
+	st.WriteMinutes(ctx, []model.MinuteStat{{TargetID: 1, TS: 1000, Sent: 1, Recv: 1}})
+	end := int64(1100)
+	for _, ev := range []*model.Event{
+		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 900, EndedAt: &end}, // clipped to start at 1000
+		{Kind: model.EventOutage, Scope: model.FamilyV6, StartedAt: 1200},              // IPv6 does not count
+		{Kind: model.EventDegraded, Scope: model.FamilyV4, StartedAt: 1300},            // not an outage
+		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 1900},              // open: runs to now
+	} {
+		if err := st.InsertEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := s.uptime(ctx, 0, 5000, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Monitored 1000..2000; down 1000..1100 and 1900..2000.
+	if u.MonitoredS != 1000 || u.DowntimeS != 200 || u.Outages != 2 || *u.UptimePct != 80 || u.LongestS != 200 {
+		t.Fatalf("uptime = %+v (pct %v)", u, *u.UptimePct)
+	}
+	if *u.LastOutage != 1900 {
+		t.Fatalf("last outage = %d", *u.LastOutage)
+	}
+}

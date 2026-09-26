@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thedatafiend/unraid-internet-monitor/internal/alert"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/api"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/monitor"
@@ -116,9 +117,20 @@ func serve() error {
 	}
 	defer st.Close()
 
-	eng := monitor.New(cfg, p4, p6, st, log)
+	var sender alert.Sender
+	if cfg.DiscordWebhookURL != "" {
+		sender = alert.NewDiscord(cfg.DiscordWebhookURL)
+		log.Info("Discord alerts enabled")
+	}
+	alerts := alert.NewManager(alert.Config{
+		MinOutage: cfg.AlertMinOutage, Coalesce: cfg.AlertCoalesce, ISPHopChange: cfg.AlertISPHopChange,
+	}, sender, st, log)
+	alertsDone := make(chan struct{})
+	go func() { defer close(alertsDone); alerts.Run(ctx) }()
+
+	eng := monitor.New(cfg, p4, p6, st, alerts, log)
 	srv := &http.Server{
-		Handler:           api.New(eng, st, log, version, cfg.RetentionDays),
+		Handler:           api.New(eng, st, alerts, log, version, cfg.RetentionDays),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	srvErr := make(chan error, 1)
@@ -145,6 +157,7 @@ func serve() error {
 	if e := <-engErr; err == nil {
 		err = e
 	}
+	<-alertsDone
 	return err
 }
 

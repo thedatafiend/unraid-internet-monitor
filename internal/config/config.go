@@ -42,6 +42,18 @@ type Config struct {
 	PingTimeout   time.Duration
 	PUID          int
 	PGID          int
+
+	// Detection.
+	OutageThreshold time.Duration // all internet targets down this long = outage
+	DegradedLossPct float64
+	DegradedP95Ms   float64
+	DegradedMin     time.Duration // degraded condition must hold this long
+
+	// Alerts.
+	DiscordWebhookURL string
+	AlertMinOutage    time.Duration
+	AlertCoalesce     time.Duration
+	AlertISPHopChange bool
 }
 
 // Defaults returns the configuration used when no environment variables are set.
@@ -59,6 +71,14 @@ func Defaults() Config {
 		PingTimeout:   2 * time.Second,
 		PUID:          99,
 		PGID:          100,
+
+		OutageThreshold: 3 * time.Second,
+		DegradedLossPct: 2,
+		DegradedP95Ms:   100,
+		DegradedMin:     2 * time.Minute,
+
+		AlertMinOutage: 30 * time.Second,
+		AlertCoalesce:  5 * time.Minute,
 	}
 }
 
@@ -99,6 +119,27 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	float := func(key string, dst *float64, min float64) {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || f < min {
+				fail(key, fmt.Errorf("want a number >= %g, got %q", min, v))
+				return
+			}
+			*dst = f
+		}
+	}
+	boolean := func(key string, dst *bool) {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				fail(key, fmt.Errorf("want true or false, got %q", v))
+				return
+			}
+			*dst = b
+		}
+	}
+
 	str("LISTEN_ADDR", &c.ListenAddr)
 	str("DATA_DIR", &c.DataDir)
 	integer("RETENTION_DAYS", &c.RetentionDays, 1)
@@ -111,6 +152,19 @@ func Load(getenv func(string) string) (Config, error) {
 	duration("PING_TIMEOUT", &c.PingTimeout, 100*time.Millisecond)
 	integer("PUID", &c.PUID, 0)
 	integer("PGID", &c.PGID, 0)
+	duration("OUTAGE_THRESHOLD", &c.OutageThreshold, time.Second)
+	float("DEGRADED_LOSS_PCT", &c.DegradedLossPct, 0.1)
+	float("DEGRADED_P95_MS", &c.DegradedP95Ms, 1)
+	duration("DEGRADED_MIN", &c.DegradedMin, 10*time.Second)
+	str("DISCORD_WEBHOOK_URL", &c.DiscordWebhookURL)
+	duration("ALERT_MIN_OUTAGE", &c.AlertMinOutage, 0)
+	duration("ALERT_COALESCE", &c.AlertCoalesce, 0)
+	boolean("ALERT_ISP_HOP_CHANGE", &c.AlertISPHopChange)
+
+	if u := c.DiscordWebhookURL; u != "" && !strings.HasPrefix(u, "https://") {
+		// Don't echo the value: it contains the webhook token.
+		fail("DISCORD_WEBHOOK_URL", fmt.Errorf("must be an https:// Discord webhook URL"))
+	}
 
 	c.IPv6 = strings.ToLower(c.IPv6)
 	switch c.IPv6 {

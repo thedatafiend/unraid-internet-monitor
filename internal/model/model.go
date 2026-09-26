@@ -67,3 +67,46 @@ type Bucket struct {
 	Max    *float64
 	Jitter *float64
 }
+
+// Event kinds.
+const (
+	EventOutage       = "outage"         // all internet targets of a family unreachable
+	EventPartial      = "partial"        // one target (or all of IPv6) unreachable while the internet is up
+	EventDegraded     = "degraded"       // sustained loss or high latency
+	EventISPHopChange = "isp_hop_change" // the ISP edge router changed
+)
+
+// Outage classifications: where the break most likely is.
+const (
+	ClassLocal    = "local"    // the gateway was down too: LAN, router or modem
+	ClassISPEdge  = "isp_edge" // gateway up, ISP edge router down
+	ClassUpstream = "upstream" // gateway and ISP edge up, internet unreachable
+)
+
+// Event is an outage, degradation or change, open while EndedAt is nil.
+type Event struct {
+	ID        int64          `json:"id"`
+	Kind      string         `json:"kind"`
+	Scope     string         `json:"scope"` // ip4, ip6 or a target name
+	Class     string         `json:"class,omitempty"`
+	StartedAt int64          `json:"started_at"`
+	EndedAt   *int64         `json:"ended_at"`
+	Details   map[string]any `json:"details"`
+}
+
+// Duration returns the event's length in seconds, measured to now while it is open.
+func (e Event) Duration(now int64) int64 {
+	if e.EndedAt != nil {
+		return *e.EndedAt - e.StartedAt
+	}
+	return now - e.StartedAt
+}
+
+// OutboxItem is a queued alert.
+type OutboxItem struct {
+	ID        int64
+	CreatedAt int64
+	Kind      string
+	Payload   []byte
+	Attempts  int
+}

@@ -150,7 +150,13 @@ Retry-After`, and it drops alerts older than 24 h with a log line.
 - Outages shorter than `ALERT_MIN_OUTAGE` (default `30s`) are recorded but not alerted.
 - Flaps within `ALERT_COALESCE` (default `5m`) are merged into one message
   ("3 outages in 4 min, 1m12s total").
-- Each alert kind has a cooldown (default `10m`).
+- Coalescing replaces a separate per-kind cooldown: after an immediate alert,
+  more events of the same kind within `ALERT_COALESCE` go into one digest message.
+- If the "outage started" alert is still undelivered when the outage ends (the
+  usual case for a full outage), it is cancelled. Only the recovery message is
+  sent, and it carries the start time and duration.
+- Events left open by a crash or restart are closed at startup, at the last
+  saved minute, and marked `interrupted`.
 - A "Send test alert" button on the Settings page (`POST /api/alerts/test`) checks the webhook.
 
 The notifier sits behind a small `Notifier` interface, so ntfy, Pushover, or a
@@ -302,11 +308,13 @@ targets. Environment variables take precedence.
 | `SPEEDTEST_SCHEDULE` | `04:00` (`off` to disable) | Daily local time, plus 0–10 min jitter |
 | `SPEEDTEST_MAX_SECONDS` | `10` | Per direction |
 | `OUTAGE_THRESHOLD` | `3s` | Consecutive down ticks |
-| `DEGRADED_LOSS_PCT` / `DEGRADED_P95_MS` | `2` / `100` | |
+| `DEGRADED_LOSS_PCT` / `DEGRADED_P95_MS` | `2` / `100` | Over a rolling 60 s window |
+| `DEGRADED_MIN` | `2m` | How long the degraded condition must hold |
 | `PUID` / `PGID` | `99` / `100` | Unraid `nobody:users` |
 | `TZ` | `UTC` | Used for the speed test and summary schedules and for logs. The UI renders in browser local time. Set it to your zone (e.g. `America/Denver`) |
 | `DISCORD_WEBHOOK_URL` | unset | Turns on alerts |
 | `ALERT_MIN_OUTAGE` / `ALERT_COALESCE` | `30s` / `5m` | Noise control |
+| `ALERT_ISP_HOP_CHANGE` | `false` | Alert when the ISP edge router changes |
 | `ALERT_MIN_DOWN_MBPS` / `ALERT_MIN_UP_MBPS` | unset | Speed test thresholds |
 | `ALERT_DAILY_SUMMARY` | `off` | e.g. `08:00` |
 | `PROMETHEUS` | `false` | Enable `/metrics` |
@@ -395,9 +403,10 @@ Deploying at M4 means real data accumulates while M5–M7 are built.
 
 | # | State | Notes |
 |---|---|---|
-| M0 | **Tooling done; needs a run on the real Unraid box** | `internet-monitor diag` checks every M0 assumption. The Dockerfile was pulled forward from M4 so `diag` can run in a container. In a test container with `--network host`, the app opened a raw socket as root, dropped to `99:100`, and kept pinging. A one-burst traceroute found the first public hop, and the DB files ended up owned by `99:100`. |
+| M0 | **Done** | `internet-monitor diag` checks every M0 assumption. On the Unraid server with `--network host`: the raw socket opened as root and the app dropped to `99:100`. The kernel route lookup found the gateway, and the one-burst traceroute found an ISP edge router that answers pings. All targets showed 0% loss. The ISP has no IPv6. Discovery asks the kernel for the real egress route over netlink (`ip route get`), so policy routing (Tailscale, VPNs) is handled and flagged. |
 | M1 | **Done** | Engine, discovery, ring buffer, per-minute rollups (merged safely across restarts), SQLite with retention, and `/api/status`, `/api/targets`, `/api/metrics`, `/api/live`, `/healthz`. There is a temporary status page at `/`. Measured: about 15 MB RSS and about 0.1% CPU with 6 targets at 1 pps; the image is 22 MB. |
-| M2 | Next | Outage/degraded detector, events table, Discord alerts |
+| M2 | **Done** | Pure-function detector (outage with local / ISP-edge / upstream classification, single-target and IPv6 partials, degraded by loss or p95), events table, `/api/events`, `/api/uptime`, 24 h uptime in `/api/status`. Discord alerts through a SQLite outbox with retry, supersede, coalescing and a test button. Tested end to end with iptables: blocked ICMP, Discord unreachable during the outage, flapping, and `kill -9` mid-outage. |
+| M3 | Next | Web UI: dashboard, history and events pages |
 
 ## 12. Resource budget and how it is verified
 

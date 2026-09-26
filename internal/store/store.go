@@ -36,6 +36,29 @@ var migrations = []string{
 		PRIMARY KEY (target_id, ts)
 	) WITHOUT ROWID;
 	CREATE INDEX probe_minute_ts ON probe_minute(ts);`,
+
+	`CREATE TABLE events (
+		id         INTEGER PRIMARY KEY,
+		kind       TEXT NOT NULL,
+		scope      TEXT NOT NULL,
+		class      TEXT NOT NULL DEFAULT '',
+		started_at INTEGER NOT NULL,
+		ended_at   INTEGER,
+		details    TEXT NOT NULL DEFAULT '{}'
+	);
+	CREATE INDEX events_started ON events(started_at);
+	CREATE TABLE alert_outbox (
+		id              INTEGER PRIMARY KEY,
+		created_at      INTEGER NOT NULL,
+		kind            TEXT NOT NULL,
+		payload         TEXT NOT NULL,
+		status          TEXT NOT NULL DEFAULT 'pending', -- pending | sent | failed | superseded
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL,
+		sent_at         INTEGER,
+		error           TEXT
+	);
+	CREATE INDEX alert_outbox_due ON alert_outbox(status, next_attempt_at);`,
 }
 
 // Store wraps the SQLite database.
@@ -242,14 +265,22 @@ func ptr(n sql.NullFloat64) *float64 {
 	return &n.Float64
 }
 
-// Prune deletes rollups older than before (unix seconds) and returns freed
-// pages to the filesystem.
+// Prune deletes rollups and finished events older than before (unix
+// seconds), and delivered alerts older than a week, then returns freed pages
+// to the filesystem. It reports how many rollup rows were removed.
 func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM probe_minute WHERE ts < ?`, before)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE ended_at IS NOT NULL AND ended_at < ?`, before); err != nil {
+		return n, err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM alert_outbox WHERE status != 'pending' AND created_at < ?`, before-7*86400); err != nil {
+		return n, err
+	}
 	if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`); err != nil {
 		return n, err
 	}

@@ -7,11 +7,11 @@ Tailscale.
 
 The design is in [docs/PLAN.md](docs/PLAN.md).
 
-**Status:** M1 (core engine) is done. It pings your gateway, your ISP's edge
-router, and public anycast resolvers once a second, keeps a 1-hour live buffer,
-writes per-minute rollups to SQLite, prunes data past the retention window, and
-serves a JSON API with a temporary status page. The outage detector, Discord
-alerts and the real dashboard come next (M2–M3).
+**Status:** M2 is done. The app pings your router, your ISP's edge router and
+public resolvers once a second. It detects outages (and says whether the break is
+your LAN, your ISP's connection, or further upstream), slowdowns, and single-target
+failures. It keeps 30 days of history in SQLite and sends Discord alerts. There is
+a temporary status page at `/`; the real dashboard comes next (M3).
 
 ## Try it on Unraid
 
@@ -61,6 +61,25 @@ page is also at `http://<unraid-tailscale-name>:8765`.
 Keep the `appdata` share on the cache/SSD pool. The app writes about once a
 minute, which would otherwise keep array disks spinning.
 
+## Discord alerts
+
+1. In Discord, open the channel's **Edit Channel → Integrations → Webhooks → New
+   Webhook**, then **Copy Webhook URL**.
+2. Pass it to the container as `-e DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...`.
+   Treat the URL like a password: anyone who has it can post to the channel.
+3. Open the status page and click **Send test alert**, or run
+   `curl -X POST http://<unraid-ip>:8765/api/alerts/test`.
+
+What you get:
+
+- **Outage:** after 30 s, and again on recovery with the duration and likely
+  cause. When the whole internet is down, Discord is unreachable too, so you get
+  a single "restored" message once the connection is back.
+- **Degraded:** loss of at least 2%, or p95 latency over 100 ms, sustained for 2
+  minutes. You get a message when it starts and when it clears.
+- **Flapping:** several outages in quick succession are batched into one digest
+  instead of a burst of messages.
+
 ## Configuration
 
 All settings are environment variables. The full list, including the ones planned
@@ -79,12 +98,21 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `CUSTOM_TARGETS` | unset | `name=host,name2=host2`, charted but never counted as an outage |
 | `PING_INTERVAL` / `PING_TIMEOUT` | `1s` / `2s` | |
 | `PUID` / `PGID` | `99` / `100` | User the app switches to after opening its ICMP socket. `PUID=0` stays root |
+| `OUTAGE_THRESHOLD` | `3s` | All internet targets down this long counts as an outage |
+| `DEGRADED_LOSS_PCT` / `DEGRADED_P95_MS` / `DEGRADED_MIN` | `2` / `100` / `2m` | Degraded-connection thresholds |
+| `DISCORD_WEBHOOK_URL` | unset | Turns on alerts |
+| `ALERT_MIN_OUTAGE` | `30s` | Shorter outages are recorded but not alerted |
+| `ALERT_COALESCE` | `5m` | Window for batching repeated alerts into a digest |
+| `ALERT_ISP_HOP_CHANGE` | `false` | Alert when your ISP's edge router changes |
 
 ## API
 
 | Endpoint | |
 |---|---|
-| `GET /api/status` | Live state, provisional online/offline, MOS, per-target 60 s stats, discovery info and warnings |
+| `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime, MOS, per-target 60 s stats, discovery info and warnings |
+| `GET /api/events?from=&to=&kind=` | Outages, partial failures, degradations and ISP-hop changes (default: last 7 days) |
+| `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count and longest outage (default: last 24 h) |
+| `POST /api/alerts/test` | Send a test Discord message |
 | `GET /api/targets` | All targets, including disabled ones that still have history |
 | `GET /api/metrics?target=ID&from=&to=&step=` | Stored per-minute history as parallel arrays, downsampled to at most 1000 points |
 | `GET /api/live?seconds=900` | Per-second RTTs from memory (up to 1 h) |
