@@ -25,53 +25,57 @@ The web UI has four pages:
 The UI follows your light or dark theme and works on a phone. Everything is served
 from the container itself, so it keeps working while your internet is down.
 
-## Try it on Unraid
+## Install on Unraid
 
-There is no published image yet (the GitHub Actions build comes in M4), so build
-it on the server from an Unraid terminal:
+The image is built by GitHub Actions and published to
+`ghcr.io/thedatafiend/unraid-internet-monitor` for amd64 and arm64.
+
+1. **If you started it by hand before**, remove that container first. Your
+   history in `appdata` is kept:
+   ```sh
+   docker rm -f internet-monitor
+   ```
+2. **Add the template** from an Unraid terminal:
+   ```sh
+   wget -O /boot/config/plugins/dockerMan/templates-user/my-internet-monitor.xml \
+     https://raw.githubusercontent.com/thedatafiend/unraid-internet-monitor/HEAD/unraid/internet-monitor.xml
+   ```
+3. **Create the container:** go to **Docker → Add Container**, pick **internet-monitor** from
+   the *Template* list (under *User templates*), paste your Discord webhook URL if you
+   want alerts, and click **Apply**. The defaults (host networking, data in
+   `/mnt/user/appdata/internet-monitor`, port 8765) suit most setups. Tuning options are
+   under *Show more settings*.
+4. **Open the UI** from the container's icon (**WebUI**), or go to `http://<unraid-ip>:8765`.
+   Because the Unraid host is on your tailnet, it's also at
+   `http://<unraid-tailscale-name>:8765`.
+
+**Updating:** on the Docker tab, click **Check for Updates**, then **apply update**.
+
+Keep the `appdata` share on the cache/SSD pool. The app writes about once a minute,
+which would otherwise keep array disks spinning.
+
+### Image tags
+
+| Tag | What it is |
+|---|---|
+| `latest` | The repository's default branch |
+| `1.2.3`, `1.2` | Release tags (`v1.2.3`) |
+| `sha-abc1234` | A specific commit |
+| `<branch-name>` | The tip of any other branch |
+
+### Checking the setup
+
+`diag` prints what the monitor sees: socket type, privilege drop, egress route,
+gateway, ISP edge router, a traceroute and a 10-ping test to every target.
 
 ```sh
-cd /tmp
-git clone -b claude/internet-quality-monitor-app-mnglkp https://github.com/thedatafiend/unraid-internet-monitor.git
-cd unraid-internet-monitor
-docker build -t internet-monitor .
+docker run --rm --network host ghcr.io/thedatafiend/unraid-internet-monitor diag
 ```
 
-### 1. Check that monitoring works on your network (milestone M0)
-
-```sh
-docker run --rm --network host internet-monitor diag
-```
-
-`diag` reports the socket type, the privilege drop, the detected gateway and ISP
-hop, a traceroute, IPv6 availability, and a 10-ping test to every target. What to
-look for:
-
-- `ICMP socket v4: raw` and `uid/gid after drop: 99/100`
-- `egress route:` names your LAN interface (usually `br0` or `eth0`) and
-  `tunnel in path: none`. If it names `tailscale0` or a `wg` interface, the
-  server's internet traffic goes through a Tailscale exit node or VPN. The
-  measurements would then describe that tunnel, not your ISP.
-- `gateway:` shows your router's LAN IP
-- `ISP hop:` shows a public or `100.64.x.x` address. If it says `none`, your ISP
-  filters these probes. Set `ISP_HOP=off`, or set it to a hop you trust.
-- The internet targets show 0% loss
-
-### 2. Run it
-
-```sh
-docker run -d --name internet-monitor --restart unless-stopped \
-  --network host \
-  -v /mnt/user/appdata/internet-monitor:/data \
-  -e TZ=America/Denver \
-  internet-monitor
-```
-
-Open `http://<unraid-ip>:8765`. Because the Unraid host is on your tailnet, the same
-page is also at `http://<unraid-tailscale-name>:8765`.
-
-Keep the `appdata` share on the cache/SSD pool. The app writes about once a
-minute, which would otherwise keep array disks spinning.
+Look for `ICMP socket v4: raw`, `uid/gid after drop: 99/100`, your LAN interface
+and `tunnel in path: none`, your router as the gateway, and 0% loss to the
+internet targets. If `ISP hop:` says `none`, your ISP filters those probes; set
+`ISP_HOP=off`.
 
 ## Discord alerts
 
@@ -138,7 +142,12 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 go test ./...
 go build ./cmd/internet-monitor
 sudo ./internet-monitor diag     # raw ICMP needs root or CAP_NET_RAW
+docker build -t internet-monitor .
 ```
+
+CI (`.github/workflows/ci.yml`) checks formatting, runs `go vet` and the tests
+with the race detector, and then builds and pushes the multi-arch image. Pull
+requests only run the checks. To cut a release, push a tag such as `v1.0.0`.
 
 Without root, the app falls back to unprivileged ping sockets when the host
 allows them (`net.ipv4.ping_group_range`). In that mode ISP-hop auto-detection is
