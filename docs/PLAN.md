@@ -4,6 +4,18 @@ A small, always-on Docker app for Unraid that continuously measures the quality
 of the home internet connection to the ISP (and beyond), keeps 30 days of history,
 and serves a web UI reachable on the LAN and over Tailscale.
 
+## 0. Decisions
+
+| Topic | Decision |
+|---|---|
+| Language | **Go** |
+| Speed tests | **Once a day** (default 04:00 local, plus a manual "Run now" button) |
+| Alerts | **Discord** webhook (section 3.5), part of v1 |
+| IPv6 | **Stubbed**: data model, config, and auto-detect are in place from the start. v6 probing turns on when a global IPv6 default route exists |
+| Tailscale | The Unraid host is already on the tailnet, so we use host networking and reach the UI over the host's MagicDNS name (section 9, option 1) |
+| Custom targets | Not needed now. They are supported through config (`CUSTOM_TARGETS`), and UI editing comes later |
+| Auth | **None** in v1. Access is limited to the LAN plus Tailscale ACLs |
+
 ## 1. Goals and non-goals
 
 **Goals**
@@ -18,13 +30,13 @@ and serves a web UI reachable on the LAN and over Tailscale.
 **Non-goals (for v1)**
 
 - Multi-site or distributed probes
-- User accounts or RBAC. The app is trusted-network only, with optional basic auth.
+- Authentication of any kind. The app is trusted-network only (LAN plus Tailscale ACLs); basic auth could be added later.
 - Long-term (over 1 year) archival. Hourly rollups could add this later.
 
-## 2. Language choice: Go (recommended) vs Rust
+## 2. Language choice: Go (decided)
 
 Both meet the performance goals easily. The workload is a few packets per second
-and one DB write per minute. **Recommendation: Go.**
+and one DB write per minute. **Go was chosen.**
 
 | | Go | Rust |
 |---|---|---|
@@ -48,10 +60,17 @@ library that covers nearly everything, and `tsnet` as an option later.
 | `gateway` | auto (default route) | Separates LAN or router problems from ISP problems |
 | `isp` | auto: first hop that is not RFC1918 (CGNAT `100.64/10` counts as ISP) | ISP edge health |
 | `internet` | `1.1.1.1`, `8.8.8.8`, `9.9.9.9` | Anycast, three independent operators |
-| `custom` | user-defined (e.g. a game server, work VPN) | Personal relevance |
+| `custom` | none by default; set via `CUSTOM_TARGETS` (e.g. a game server, work VPN) | Personal relevance |
 
 ISP-hop discovery uses TTL-limited ICMP echoes (TTL 1..6). It runs at startup,
 hourly, and after every outage recovery. A change in the ISP hop is logged as an event.
+
+**IPv6 (stubbed).** Every target has an address family (`ip4` or `ip6`). The v6
+internet defaults are `2606:4700:4700::1111`, `2001:4860:4860::8888`, and
+`2620:fe::fe`. With `IPV6=auto` (the default), v6 targets are probed only when the
+host has a global IPv6 default route. Otherwise they are stored as disabled and the
+UI shows "IPv6 not available". Outage detection treats v4 and v6 as separate scopes,
+so a v6-only failure is shown as a `partial` event.
 
 > Caveat: routers often rate-limit ICMP to their own control plane. Loss to the
 > ISP hop alone is shown but **not** treated as an outage unless the downstream
@@ -66,7 +85,7 @@ hourly, and after every outage recovery. A change in the ISP hop is logged as an
 | HTTP(S) | 60 s | DNS / TCP connect / TLS / TTFB via `httptrace` to `generate_204` endpoints. Catches problems ICMP misses |
 | Public IP | 5 min | Detects ISP reconnects and IP changes (logged as event) |
 | Traceroute | on outage start + hourly | Path snapshot for "where did it break" |
-| Speed test | **every 6 h** (configurable, can be disabled) + manual button | Down/up throughput, **latency under load** (bufferbloat grade) |
+| Speed test | **daily at 04:00 local** (configurable, can be disabled) + manual button | Down/up throughput, **latency under load** (bufferbloat grade) |
 
 Steady-state probe traffic is about 5 packets/s, which is under 1 KB/s.
 
@@ -76,9 +95,10 @@ fixed duration (about 10 s each direction), not a fixed byte count, so it scales
 gigabit links. ICMP to `1.1.1.1` continues during the test to measure loaded
 latency. Each result records the bytes used.
 
-> Data usage warning: one test on 1 Gbps is about 2.5 GB (down + up). Every 6 h
-> that adds up to about 300 GB per month. The interval and the per-test caps are
-> configurable. Default off, or every 6 h? → see open questions.
+> Data usage: one test on 1 Gbps is about 2.5 GB (down + up), so a daily test is
+> about 75 GB per month. The schedule and the per-test caps are configurable.
+> A random delay of 0–10 min is added to the start time so the test doesn't line up
+> with other scheduled jobs.
 
 ### 3.3 Derived metrics
 
@@ -105,6 +125,36 @@ The detector is a per-second state machine over the ICMP results:
 
 Each event triggers an immediate traceroute and a DNS check, and stores the results
 in the event's `details`.
+
+### 3.5 Alerts (Discord)
+
+Set `DISCORD_WEBHOOK_URL` to turn alerts on. Messages are Discord embeds, colored
+red for outages, amber for degraded, green for recovered, and blue for info.
+
+| Alert | Default | Notes |
+|---|---|---|
+| Outage resolved | on | Duration, classification, affected targets, traceroute summary |
+| Outage started | on (best effort) | Only reachable when the outage is `partial` or v6-only. For a full outage it is queued and sent together with the recovery message |
+| Degraded started / cleared | on | Loss %, p95 RTT, which targets |
+| Public IP changed | on | Old → new |
+| ISP hop changed | off | Useful for spotting ISP rerouting |
+| Speed test below threshold | on if `ALERT_MIN_DOWN_MBPS` / `ALERT_MIN_UP_MBPS` set | Includes the loaded-latency grade |
+| Daily summary | off | Uptime %, outages, avg/p95 latency, loss, speed test result (`ALERT_DAILY_SUMMARY=08:00`) |
+
+**Delivery:** the Discord internet path is unavailable during a real outage, so
+alerts go through a small **persistent outbox** (a SQLite table). A sender loop
+delivers queued alerts with exponential backoff. It respects Discord's `429
+Retry-After`, and it drops alerts older than 24 h with a log line.
+
+**Noise control:**
+- Outages shorter than `ALERT_MIN_OUTAGE` (default `30s`) are recorded but not alerted.
+- Flaps within `ALERT_COALESCE` (default `5m`) are merged into one message
+  ("3 outages in 4 min, 1m12s total").
+- Each alert kind has a cooldown (default `10m`).
+- A "Send test alert" button on the Settings page (`POST /api/alerts/test`) checks the webhook.
+
+The notifier sits behind a small `Notifier` interface, so ntfy, Pushover, or a
+generic webhook can be added later without touching the detector.
 
 ## 4. Architecture
 
@@ -143,6 +193,7 @@ in the event's `details`.
 ```sql
 CREATE TABLE targets (
   id INTEGER PRIMARY KEY, kind TEXT, role TEXT, name TEXT, address TEXT,
+  family TEXT,                             -- ip4 | ip6
   enabled INTEGER DEFAULT 1
 );
 
@@ -174,6 +225,11 @@ CREATE TABLE speedtests (
 );
 
 CREATE TABLE public_ip (ts INTEGER PRIMARY KEY, ipv4 TEXT, ipv6 TEXT);
+
+CREATE TABLE alert_outbox (              -- persistent queue for Discord
+  id INTEGER PRIMARY KEY, created_at INTEGER, kind TEXT, payload TEXT,  -- JSON
+  attempts INTEGER DEFAULT 0, next_attempt_at INTEGER, sent_at INTEGER, error TEXT
+);
 CREATE TABLE schema_version (version INTEGER);
 ```
 
@@ -197,6 +253,7 @@ min-of-min, max-of-max, max-of-p95 (conservative), and summed sent and recv for 
 | GET | `/api/events?from=&to=&kind=` | Outages, degradations, IP changes |
 | GET | `/api/speedtests?from=&to=` | Speed test history |
 | POST | `/api/speedtest` | Trigger a speed test now |
+| POST | `/api/alerts/test` | Send a test Discord message |
 | GET | `/api/stream` | **SSE**: 1 s live samples plus event open/close |
 | GET | `/api/export.csv?…` | CSV export (e.g. for ISP complaints) |
 | GET | `/healthz` | Container healthcheck |
@@ -231,18 +288,24 @@ targets. Environment variables take precedence.
 | `LISTEN_ADDR` | `:8765` | Web UI/API bind |
 | `DATA_DIR` | `/data` | SQLite DB location |
 | `RETENTION_DAYS` | `30` | |
-| `PING_TARGETS` | `1.1.1.1,8.8.8.8,9.9.9.9` | Internet targets |
+| `PING_TARGETS` | `1.1.1.1,8.8.8.8,9.9.9.9` | Internet targets (v4) |
+| `PING_TARGETS_V6` | `2606:4700:4700::1111,2001:4860:4860::8888,2620:fe::fe` | Internet targets (v6) |
+| `IPV6` | `auto` | `auto`, `on`, or `off` |
+| `CUSTOM_TARGETS` | unset | `name=host,name2=host2`; pinged, charted, never counted as an outage |
 | `GATEWAY` | `auto` | Override if auto-detect fails (e.g. bridge networking) |
 | `ISP_HOP` | `auto` | `auto`, an IP, or `off` |
 | `PING_INTERVAL` | `1s` | |
 | `DNS_INTERVAL` / `HTTP_INTERVAL` | `30s` / `60s` | |
-| `SPEEDTEST_INTERVAL` | `6h` (`0` = off) | |
+| `SPEEDTEST_SCHEDULE` | `04:00` (`off` to disable) | Daily local time, plus 0–10 min jitter |
 | `SPEEDTEST_MAX_SECONDS` | `10` | Per direction |
 | `OUTAGE_THRESHOLD` | `3s` | Consecutive down ticks |
 | `DEGRADED_LOSS_PCT` / `DEGRADED_P95_MS` | `2` / `100` | |
 | `PUID` / `PGID` | `99` / `100` | Unraid `nobody:users` |
-| `TZ` | `UTC` | Only affects logs; the UI renders in browser local time |
-| `BASIC_AUTH` | unset | `user:bcrypt-hash`, optional |
+| `TZ` | `UTC` | Used for the speed test and summary schedules and for logs. The UI renders in browser local time. Set it to your zone (e.g. `America/Denver`) |
+| `DISCORD_WEBHOOK_URL` | unset | Turns on alerts |
+| `ALERT_MIN_OUTAGE` / `ALERT_COALESCE` | `30s` / `5m` | Noise control |
+| `ALERT_MIN_DOWN_MBPS` / `ALERT_MIN_UP_MBPS` | unset | Speed test thresholds |
+| `ALERT_DAILY_SUMMARY` | `off` | e.g. `08:00` |
 | `PROMETHEUS` | `false` | Enable `/metrics` |
 
 ## 8. Deployment on Unraid
@@ -274,9 +337,10 @@ Applications later.
 
 ## 9. Tailscale access
 
-These options are listed in order of simplicity:
+**Decision: option 1.** The Unraid host is already on the tailnet. The other
+options are kept here for reference.
 
-1. **Unraid host on the tailnet (recommended):** use the Tailscale plugin or the native
+1. **Unraid host on the tailnet (chosen):** use the Tailscale plugin or the native
    Tailscale support in Unraid 7. With host networking, the UI is at
    `http://<unraid-magicdns-name>:8765` with no app changes. Use Tailscale ACLs to limit who can reach it.
 2. **Unraid 7 per-container Tailscale toggle:** gives the container its own tailnet
@@ -298,6 +362,7 @@ internal/config/                  # env + yaml parsing, validation
 internal/probe/                   # icmp.go dns.go http.go publicip.go trace.go speedtest.go
 internal/discover/                # gateway + ISP hop discovery
 internal/aggregate/               # 1s ring buffer, per-minute rollups, percentiles, MOS
+internal/alert/                   # Notifier interface, Discord embeds, outbox sender, coalescing
 internal/detect/                  # outage/degraded state machine
 internal/store/                   # sqlite, migrations, queries, retention
 internal/api/                     # handlers, SSE hub, CSV export, basic auth
@@ -313,13 +378,13 @@ docs/PLAN.md
 | # | Milestone | Deliverable |
 |---|---|---|
 | **M0** | Spikes (½ day) | Confirm the privilege-drop plus raw-socket approach in host mode on Unraid. Confirm the ISP-hop discovery heuristic on the real network. |
-| **M1** | Core engine | ICMP prober (multi-target, one socket), gateway/ISP discovery, ring buffer, per-minute rollups, SQLite store plus retention, `/api/status` and `/api/metrics`. Unit tests for aggregation and percentiles. |
-| **M2** | Detection | Outage/degraded state machine plus classification and the events table. Table-driven tests with synthetic tick streams. |
+| **M1** | Core engine | ICMP prober (multi-target, one socket, v4 now, v6 stubbed), gateway/ISP discovery, ring buffer, per-minute rollups, SQLite store plus retention, `/api/status` and `/api/metrics`. Unit tests for aggregation and percentiles. |
+| **M2** | Detection + Discord | Outage/degraded state machine plus classification and the events table. Discord notifier with outbox, coalescing, and a test button. Table-driven tests with synthetic tick streams. |
 | **M3** | Web UI v1 | Dashboard (SSE live chart), History, and Events pages. |
 | **M4** | Ship it | Dockerfile, Unraid template, GitHub Actions multi-arch build to GHCR. **Deploy on Unraid and start collecting data.** |
-| **M5** | More probes | DNS, HTTP phase timing, public IP tracking, traceroute on outage. |
-| **M6** | Speed tests | Cloudflare-based test with loaded latency and bufferbloat grade, plus scheduled and manual runs and a UI page. |
-| **M7** | Nice-to-haves | Alerts (ntfy / Discord / Gotify / generic webhook), Prometheus `/metrics`, CSV export, IPv6 targets, hourly rollups for 1-year history, embedded `tsnet`, editable settings in the UI. |
+| **M5** | More probes | DNS, HTTP phase timing, public IP tracking (plus alert), traceroute on outage. |
+| **M6** | Speed tests | Daily Cloudflare-based test with loaded latency and bufferbloat grade, a manual run button, a UI page, and threshold alerts. |
+| **M7** | Nice-to-haves | Live IPv6 probing (if the ISP supports it), custom targets editable in the UI, daily Discord summary, Prometheus `/metrics`, CSV export, hourly rollups for 1-year history, optional basic auth, other notifiers (ntfy/Pushover). |
 
 Deploying at M4 means real data accumulates while M5–M7 are built.
 
@@ -327,7 +392,7 @@ Deploying at M4 means real data accumulates while M5–M7 are built.
 
 | Metric | Budget | How it is checked |
 |---|---|---|
-| RSS | ≤ 30 MB (≤ 50 MB with tsnet) | `docker stats` after 24 h |
+| RSS | ≤ 30 MB | `docker stats` after 24 h |
 | CPU | < 1% of one core at idle | `docker stats` / `pidstat` |
 | DB size | < 100 MB at 30 days | Settings page shows size |
 | Disk writes | 1 txn/min | WAL checkpoint stats |
@@ -336,10 +401,10 @@ Deploying at M4 means real data accumulates while M5–M7 are built.
 
 ## 13. Open questions
 
-1. **Go or Rust?** The plan assumes Go (section 2).
-2. **Speed tests:** is there a data cap? Should the default be every 6 h, daily, or manual only?
-3. **Alerts:** are notifications wanted in v1? If so, which channel (ntfy, Discord, Pushover, email)?
-4. **IPv6:** does the ISP provide IPv6? If so, dual-stack targets move up from M7.
-5. **Tailscale:** is the Unraid host already on the tailnet (option 1), or should the app be its own node?
-6. **Auth:** is LAN plus Tailscale ACLs enough, or should basic auth be on by default?
-7. **Custom targets:** are there specific hosts to watch (work VPN, game servers, a VPS)?
+All of the initial questions are answered (section 0). Two remain, to be confirmed
+during M0:
+
+1. **Does the ISP provide IPv6?** `IPV6=auto` will tell us on first start, and the
+   Settings page will show the result.
+2. **Is the ISP hop reachable by ping?** Some ISPs filter ICMP to their edge routers.
+   If so, `isp_edge` classification falls back to `upstream`.
