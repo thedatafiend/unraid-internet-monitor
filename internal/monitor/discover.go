@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
@@ -20,8 +19,11 @@ type Info struct {
 	SocketV4      string      `json:"socket_v4"`
 	SocketV6      string      `json:"socket_v6"`
 	Gateway       string      `json:"gateway"`
-	GatewayIface  string      `json:"gateway_iface"`
 	GatewaySource string      `json:"gateway_source"`
+	EgressIface   string      `json:"egress_iface"` // interface the kernel uses to reach the internet
+	EgressSrc     string      `json:"egress_src"`
+	EgressTable   string      `json:"egress_table"`
+	Tunnel        string      `json:"tunnel"` // non-empty when internet traffic leaves through a VPN/overlay
 	ISPHop        string      `json:"isp_hop"`
 	ISPHopSource  string      `json:"isp_hop_source"`
 	Trace         []probe.Hop `json:"trace"`
@@ -63,25 +65,51 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 		targets = append(targets, internetTarget(host, addr))
 	}
 
+	// Ask the kernel which route internet traffic actually takes. This sees
+	// policy routing (Tailscale exit nodes, VPN clients) that the main table hides.
+	probeDst := netip.MustParseAddr("1.1.1.1")
+	if len(internet4) > 0 {
+		probeDst = internet4[0]
+	}
+	egress, egressErr := discover.RouteTo(probeDst)
+	if egressErr == nil {
+		info.EgressIface, info.EgressTable, info.Tunnel = egress.Iface, egress.TableName(), egress.TunnelKind()
+		if egress.Src.IsValid() {
+			info.EgressSrc = egress.Src.String()
+		}
+		if info.Tunnel != "" {
+			warn("traffic to %s leaves through %s via %s (routing table %s), so every measurement includes that tunnel, not just your ISP. "+
+				"If this is not intended, turn off the exit node/VPN for this server", probeDst, egress.Iface, info.Tunnel, info.EgressTable)
+		}
+	}
+
 	// Gateway.
 	var gateway netip.Addr
 	switch cfg.Gateway {
 	case config.Off:
 	case config.Auto:
-		route, err := discover.DefaultRouteV4()
-		if err != nil {
-			warn("gateway auto-detect failed: %v; set GATEWAY to your router's IP", err)
+		switch {
+		case egressErr == nil && info.Tunnel == "" && egress.Gateway.IsValid():
+			gateway = egress.Gateway
+		case egressErr == nil && info.Tunnel == "":
+			warn("traffic to %s leaves via %s without a next-hop router (PPPoE or a point-to-point link?); set GATEWAY to your router's LAN IP if you have one", probeDst, egress.Iface)
+		default:
+			// Behind a tunnel (or netlink failed) the LAN router is still the
+			// main table's default route: that is the path the tunnel itself uses.
+			if r, err := discover.DefaultRouteV4(); err == nil {
+				gateway = r.Gateway
+			} else {
+				warn("gateway auto-detect failed: %v; set GATEWAY to your router's LAN IP", err)
+			}
+		}
+		if !gateway.IsValid() {
 			break
 		}
-		info.Gateway, info.GatewayIface, info.GatewaySource = route.Gateway.String(), route.Iface, "auto"
-		if strings.HasPrefix(route.Iface, "tailscale") {
-			warn("the default route goes through %s (Tailscale exit node?); measurements reflect the exit node, not your ISP", route.Iface)
+		info.Gateway, info.GatewaySource = gateway.String(), "auto"
+		if dockerBridge.Contains(gateway) {
+			warn("gateway %s looks like a Docker bridge; use host networking or set GATEWAY to your router's IP", gateway)
 		}
-		if dockerBridge.Contains(route.Gateway) {
-			warn("gateway %s looks like a Docker bridge; use host networking or set GATEWAY to your router's IP", route.Gateway)
-		}
-		gateway = route.Gateway
-		targets = append(targets, roleTarget(model.RoleGateway, "Gateway", route.Gateway))
+		targets = append(targets, roleTarget(model.RoleGateway, "Gateway", gateway))
 	default:
 		addr, err := netip.ParseAddr(cfg.Gateway)
 		if err != nil {
@@ -106,13 +134,19 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 			warn("ISP hop auto-detect: %v; set ISP_HOP to an IP or off", err)
 			break
 		}
+		if len(hops) > 0 && hops[0].Reached {
+			warn("a probe limited to 1 hop was answered by %s itself: something between this server and the internet "+
+				"(usually a Tailscale exit node or a VPN running in userspace) answers pings on the destination's behalf, "+
+				"so latency reflects that tunnel rather than your ISP, and the ISP hop cannot be found", internet4[0])
+			break
+		}
 		hop := discover.PickISPHop(hops, gateway)
 		if !hop.IsValid() {
 			warn("ISP hop auto-detect: no public router answered before %s; set ISP_HOP to an IP or off", internet4[0])
 			break
 		}
-		if discover.IsCGNAT(hop) && strings.HasPrefix(info.GatewayIface, "tailscale") {
-			warn("ISP hop %s is in 100.64/10 and traffic leaves via Tailscale; it is probably the exit node", hop)
+		if discover.IsCGNAT(hop) && info.Tunnel != "" {
+			warn("ISP hop %s is in 100.64/10 and traffic leaves through %s; it is probably the tunnel endpoint", hop, info.Tunnel)
 		}
 		info.ISPHop, info.ISPHopSource = hop.String(), "auto"
 		targets = append(targets, roleTarget(model.RoleISP, "ISP edge", hop))
@@ -132,7 +166,11 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 	case config.IPv6On:
 		info.IPv6Available = true
 	case config.IPv6Auto:
-		info.IPv6Available = discover.IPv6Available()
+		if len(cfg.PingTargetsV6) > 0 {
+			if dst, err := netip.ParseAddr(cfg.PingTargetsV6[0]); err == nil {
+				info.IPv6Available = discover.IPv6Available(dst)
+			}
+		}
 	}
 	if info.IPv6Available {
 		if p6 == nil {

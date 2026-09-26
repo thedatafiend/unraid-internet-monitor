@@ -47,7 +47,9 @@ func diag() error {
 
 	fmt.Printf("ICMP socket v4:     %s\n", info.SocketV4)
 	fmt.Printf("ICMP socket v6:     %s\n", info.SocketV6)
-	fmt.Printf("gateway:            %s (%s, via %s)\n", orNone(info.Gateway), orNone(info.GatewaySource), orNone(info.GatewayIface))
+	fmt.Printf("egress route:       dev %s src %s table %s\n", orNone(info.EgressIface), orNone(info.EgressSrc), orNone(info.EgressTable))
+	fmt.Printf("tunnel in path:     %s\n", orNone(info.Tunnel))
+	fmt.Printf("gateway:            %s (%s)\n", orNone(info.Gateway), orNone(info.GatewaySource))
 	fmt.Printf("ISP hop:            %s (%s)\n", orNone(info.ISPHop), orNone(info.ISPHopSource))
 	fmt.Printf("IPv6:               mode=%s available=%v\n", info.IPv6Mode, info.IPv6Available)
 

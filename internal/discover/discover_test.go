@@ -28,25 +28,6 @@ br0	0001A8C0	00000000	0001	0	0	0	00FFFFFF	0	0	0
 	}
 }
 
-func TestParseRouteV6(t *testing.T) {
-	const table = `00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
-20010db8000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001      br0
-00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe80000000000000021122fffe334455 00000400 00000001 00000000 00000003      br0
-`
-	r, err := parseRouteV6(strings.NewReader(table))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Gateway != netip.MustParseAddr("fe80::211:22ff:fe33:4455") || r.Iface != "br0" {
-		t.Fatalf("got %+v", r)
-	}
-
-	onlyLo := strings.SplitN(table, "\n", 2)[0]
-	if _, err := parseRouteV6(strings.NewReader(onlyLo)); err == nil {
-		t.Fatal("expected unreachable lo route to be ignored")
-	}
-}
-
 func TestParseHasGlobalIPv6(t *testing.T) {
 	const linkLocalOnly = `00000000000000000000000000000001 01 80 10 80       lo
 fe800000000000000211223344556677 02 40 20 80      br0

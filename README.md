@@ -36,6 +36,10 @@ hop, a traceroute, IPv6 availability, and a 10-ping test to every target. What t
 look for:
 
 - `ICMP socket v4: raw` and `uid/gid after drop: 99/100`
+- `egress route:` names your LAN interface (usually `br0` or `eth0`) and
+  `tunnel in path: none`. If it names `tailscale0` or a `wg` interface, the
+  server's internet traffic goes through a Tailscale exit node or VPN. The
+  measurements would then describe that tunnel, not your ISP.
 - `gateway:` shows your router's LAN IP
 - `ISP hop:` shows a public or `100.64.x.x` address. If it says `none`, your ISP
   filters these probes. Set `ISP_HOP=off`, or set it to a hop you trust.

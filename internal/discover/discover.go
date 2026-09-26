@@ -69,46 +69,6 @@ func parseRouteV4(r io.Reader) (Route, error) {
 	return best, nil
 }
 
-// DefaultRouteV6 reads /proc/net/ipv6_route. Unreachable default routes on
-// the loopback interface are ignored.
-func DefaultRouteV6() (Route, error) {
-	f, err := os.Open("/proc/net/ipv6_route")
-	if err != nil {
-		return Route{}, err
-	}
-	defer f.Close()
-	return parseRouteV6(f)
-}
-
-func parseRouteV6(r io.Reader) (Route, error) {
-	best, bestMetric := Route{}, uint64(0)
-	found := false
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) < 10 || f[0] != strings.Repeat("0", 32) || f[1] != "00" || f[9] == "lo" {
-			continue
-		}
-		metric, err1 := strconv.ParseUint(f[5], 16, 32)
-		flags, err2 := strconv.ParseUint(f[8], 16, 32)
-		nh, err3 := hex.DecodeString(f[4])
-		if err1 != nil || err2 != nil || err3 != nil || len(nh) != 16 || flags&rtfUp == 0 {
-			continue
-		}
-		if !found || metric < bestMetric {
-			best = Route{Gateway: netip.AddrFrom16([16]byte(nh)), Iface: f[9]}
-			bestMetric, found = metric, true
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return Route{}, err
-	}
-	if !found {
-		return Route{}, fmt.Errorf("no IPv6 default route")
-	}
-	return best, nil
-}
-
 // HasGlobalIPv6 reports whether any interface other than lo has a global
 // unicast IPv6 address (per /proc/net/if_inet6).
 func HasGlobalIPv6() bool {
@@ -139,11 +99,11 @@ func parseHasGlobalIPv6(r io.Reader) bool {
 	return false
 }
 
-// IPv6Available reports whether the host can reach the IPv6 internet: it has
-// a default route and a global address.
-func IPv6Available() bool {
-	_, err := DefaultRouteV6()
-	return err == nil && HasGlobalIPv6()
+// IPv6Available reports whether the host can reach the IPv6 internet: the
+// kernel has a route to dst (in any table) and some interface has a global address.
+func IPv6Available(dst netip.Addr) bool {
+	r, err := RouteTo(dst)
+	return err == nil && r.Iface != "lo" && HasGlobalIPv6()
 }
 
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
