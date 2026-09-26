@@ -191,8 +191,12 @@ generic webhook can be added later without touching the detector.
 `auto_vacuum=INCREMENTAL`. Timestamps are stored as UTC unix seconds, and RTTs as ms (`REAL`).
 
 ```sql
+-- Schema version is tracked with PRAGMA user_version; migrations are append-only.
 CREATE TABLE targets (
-  id INTEGER PRIMARY KEY, kind TEXT, role TEXT, name TEXT, address TEXT,
+  id INTEGER PRIMARY KEY,
+  key TEXT UNIQUE,                         -- stable identity: gateway/ISP keyed by role, so
+                                           -- history survives a router or ISP-hop change
+  kind TEXT, role TEXT, name TEXT, address TEXT,
   family TEXT,                             -- ip4 | ip6
   enabled INTEGER DEFAULT 1
 );
@@ -230,7 +234,6 @@ CREATE TABLE alert_outbox (              -- persistent queue for Discord
   id INTEGER PRIMARY KEY, created_at INTEGER, kind TEXT, payload TEXT,  -- JSON
   attempts INTEGER DEFAULT 0, next_attempt_at INTEGER, sent_at INTEGER, error TEXT
 );
-CREATE TABLE schema_version (version INTEGER);
 ```
 
 **Size estimate (30 days):** about 12 series × 43,200 minutes, or about 520k rows in
@@ -387,6 +390,14 @@ docs/PLAN.md
 | **M7** | Nice-to-haves | Live IPv6 probing (if the ISP supports it), custom targets editable in the UI, daily Discord summary, Prometheus `/metrics`, CSV export, hourly rollups for 1-year history, optional basic auth, other notifiers (ntfy/Pushover). |
 
 Deploying at M4 means real data accumulates while M5–M7 are built.
+
+### Progress
+
+| # | State | Notes |
+|---|---|---|
+| M0 | **Tooling done; needs a run on the real Unraid box** | `internet-monitor diag` checks every M0 assumption. The Dockerfile was pulled forward from M4 so `diag` can run in a container. In a test container with `--network host`, the app opened a raw socket as root, dropped to `99:100`, and kept pinging. A one-burst traceroute found the first public hop, and the DB files ended up owned by `99:100`. |
+| M1 | **Done** | Engine, discovery, ring buffer, per-minute rollups (merged safely across restarts), SQLite with retention, and `/api/status`, `/api/targets`, `/api/metrics`, `/api/live`, `/healthz`. There is a temporary status page at `/`. Measured: about 15 MB RSS and about 0.1% CPU with 6 targets at 1 pps; the image is 22 MB. |
+| M2 | Next | Outage/degraded detector, events table, Discord alerts |
 
 ## 12. Resource budget and how it is verified
 

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Internet Monitor</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #ddd; --ok: #1a7f37; --bad: #cf222e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #e6e6e6; --muted: #999; --line: #333; --ok: #3fb950; --bad: #f85149; } }
+  body { margin: 0; padding: 16px; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: var(--muted); }
+  .state { font-weight: 600; }
+  .online { color: var(--ok); } .offline { color: var(--bad); }
+  table { border-collapse: collapse; margin-top: 12px; width: 100%; max-width: 900px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .wrap { overflow-x: auto; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Internet Monitor</h1>
+<p class="muted">Temporary status page. The full dashboard arrives in milestone M3.
+  API: <a href="/api/status">/api/status</a> · <a href="/api/targets">/api/targets</a> · <a href="/api/live?seconds=60">/api/live</a></p>
+<p>State: <span id="state" class="state">…</span> · MOS: <span id="mos">–</span> · DB: <span id="db">–</span></p>
+<div class="wrap">
+<table>
+  <thead><tr><th>Target</th><th>Role</th><th>Address</th><th class="num">Last ms</th><th class="num">Avg 60s</th><th class="num">p95 60s</th><th class="num">Jitter</th><th class="num">Loss %</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+</div>
+<ul id="warnings" class="muted"></ul>
+<script>
+const fmt = v => v == null ? '–' : v.toFixed(1);
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const st = document.getElementById('state');
+    st.textContent = s.state; st.className = 'state ' + s.state;
+    document.getElementById('mos').textContent = s.mos == null ? '–' : s.mos.toFixed(2);
+    document.getElementById('db').textContent = (s.db_size_bytes / 1048576).toFixed(1) + ' MB';
+    const rows = document.getElementById('rows');
+    rows.replaceChildren(...(s.targets || []).map(t => {
+      const tr = document.createElement('tr');
+      for (const [v, num] of [[t.name], [t.role], [t.address], [t.last_ok ? fmt(t.last_rtt) : 'lost', 1],
+                              [fmt(t.avg_60s), 1], [fmt(t.p95_60s), 1], [fmt(t.jitter_60s), 1], [t.loss_pct_60s.toFixed(1), 1]]) {
+        const td = document.createElement('td'); td.textContent = v; if (num) td.className = 'num'; tr.append(td);
+      }
+      return tr;
+    }));
+    document.getElementById('warnings').replaceChildren(...(s.info.warnings || []).map(w => {
+      const li = document.createElement('li'); li.textContent = w; return li;
+    }));
+  } catch (e) {
+    document.getElementById('state').textContent = 'unreachable';
+  }
+}
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
