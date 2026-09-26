@@ -54,6 +54,9 @@ func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.
 	mux.HandleFunc("POST /api/alerts/test", s.testAlert)
 	mux.HandleFunc("GET /api/stream", s.stream)
 	mux.HandleFunc("GET /api/config", s.config)
+	mux.HandleFunc("GET /api/traces", s.traces)
+	mux.HandleFunc("GET /api/public-ip", s.publicIPs)
+	mux.HandleFunc("GET /api/http", s.httpSamples)
 	mux.Handle("GET /", web.Handler())
 	return mux
 }
@@ -220,26 +223,99 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	}
 	secs := func(d time.Duration) float64 { return d.Seconds() }
 	writeJSON(w, map[string]any{
-		"retention_days":     c.RetentionDays,
-		"ping_interval_s":    secs(c.PingInterval),
-		"ping_timeout_s":     secs(c.PingTimeout),
-		"ping_targets":       c.PingTargets,
-		"ping_targets_v6":    c.PingTargetsV6,
-		"ipv6":               c.IPv6,
-		"gateway":            c.Gateway,
-		"isp_hop":            c.ISPHop,
-		"custom_targets":     custom,
-		"outage_threshold_s": secs(c.OutageThreshold),
-		"degraded_loss_pct":  c.DegradedLossPct,
-		"degraded_p95_ms":    c.DegradedP95Ms,
-		"degraded_min_s":     secs(c.DegradedMin),
+		"retention_days":       c.RetentionDays,
+		"ping_interval_s":      secs(c.PingInterval),
+		"ping_timeout_s":       secs(c.PingTimeout),
+		"ping_targets":         c.PingTargets,
+		"ping_targets_v6":      c.PingTargetsV6,
+		"ipv6":                 c.IPv6,
+		"gateway":              c.Gateway,
+		"isp_hop":              c.ISPHop,
+		"custom_targets":       custom,
+		"outage_threshold_s":   secs(c.OutageThreshold),
+		"degraded_loss_pct":    c.DegradedLossPct,
+		"degraded_p95_ms":      c.DegradedP95Ms,
+		"degraded_min_s":       secs(c.DegradedMin),
+		"dns_servers":          c.DNSServers,
+		"dns_query":            c.DNSQuery,
+		"dns_interval_s":       secs(c.DNSInterval),
+		"http_targets":         c.HTTPTargets,
+		"http_interval_s":      secs(c.HTTPInterval),
+		"public_ip_interval_s": secs(c.PublicIPInterval),
 		"alerts": map[string]any{
 			"discord":        c.DiscordWebhookURL != "",
 			"min_outage_s":   secs(c.AlertMinOutage),
 			"coalesce_s":     secs(c.AlertCoalesce),
 			"isp_hop_change": c.AlertISPHopChange,
+			"ip_change":      c.AlertIPChange,
 		},
 	})
+}
+
+// rangeParams reads from/to (unix seconds) with a default window ending now.
+func (s *Server) rangeParams(r *http.Request, window int64) (int64, int64, error) {
+	q := r.URL.Query()
+	to, err1 := intParam(q.Get("to"), s.now().Unix())
+	from, err2 := intParam(q.Get("from"), to-window)
+	if err1 != nil || err2 != nil || from > to {
+		return 0, 0, fmt.Errorf("from/to: want unix seconds with from <= to")
+	}
+	return from, to, nil
+}
+
+// traces returns traceroutes for one event (event_id) or a time range.
+func (s *Server) traces(w http.ResponseWriter, r *http.Request) {
+	eventID, err := intParam(r.URL.Query().Get("event_id"), 0)
+	if err != nil {
+		httpError(w, fmt.Errorf("event_id: want an integer"), http.StatusBadRequest)
+		return
+	}
+	from, to, err := s.rangeParams(r, 7*86400)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+	trs, err := s.st.Traces(r.Context(), eventID, from, to, 50)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, trs)
+}
+
+// publicIPs returns the public address history, newest first.
+func (s *Server) publicIPs(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.rangeParams(r, int64(s.retention)*86400)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+	ips, err := s.st.PublicIPs(r.Context(), from, to)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, ips)
+}
+
+// httpSamples returns web-request phase timings for one target.
+func (s *Server) httpSamples(w http.ResponseWriter, r *http.Request) {
+	target, err := strconv.ParseInt(r.URL.Query().Get("target"), 10, 64)
+	if err != nil {
+		httpError(w, fmt.Errorf("target: want a target id"), http.StatusBadRequest)
+		return
+	}
+	from, to, err := s.rangeParams(r, 86400)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+	samples, err := s.st.HTTPSamples(r.Context(), target, from, to)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, samples)
 }
 
 func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {

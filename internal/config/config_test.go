@@ -35,6 +35,9 @@ func TestLoadOverrides(t *testing.T) {
 		"DISCORD_WEBHOOK_URL":  "https://discord.com/api/webhooks/1/abc",
 		"ALERT_ISP_HOP_CHANGE": "true",
 		"DEGRADED_P95_MS":      "80.5",
+		"DNS_SERVERS":          "system, 9.9.9.9",
+		"HTTP_TARGETS":         "off",
+		"PUBLIC_IP_INTERVAL":   "0",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +48,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if c.DiscordWebhookURL == "" || !c.AlertISPHopChange || c.DegradedP95Ms != 80.5 {
 		t.Fatalf("alert config not loaded: %+v", c)
+	}
+	if !reflect.DeepEqual(c.DNSServers, []string{"system", "9.9.9.9"}) || c.HTTPTargets != nil || c.PublicIPInterval != 0 {
+		t.Fatalf("probe config: dns=%v http=%v ip=%v", c.DNSServers, c.HTTPTargets, c.PublicIPInterval)
 	}
 	if want := []string{"1.1.1.1", "8.8.4.4"}; !reflect.DeepEqual(c.PingTargets, want) {
 		t.Fatalf("PingTargets = %v, want %v", c.PingTargets, want)
@@ -63,11 +69,14 @@ func TestLoadErrors(t *testing.T) {
 		"CUSTOM_TARGETS":       "=host",
 		"DISCORD_WEBHOOK_URL":  "http://discord.com/api/webhooks/1/sekrit",
 		"ALERT_ISP_HOP_CHANGE": "maybe",
+		"HTTP_TARGETS":         "ftp://example.com",
+		"DNS_SERVERS":          "dns.google",
+		"PUBLIC_IP_INTERVAL":   "10s",
 	}))
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE"} {
+	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE", "HTTP_TARGETS", "DNS_SERVERS", "PUBLIC_IP_INTERVAL"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %s", err, key)
 		}

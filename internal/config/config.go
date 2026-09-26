@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -49,11 +50,21 @@ type Config struct {
 	DegradedP95Ms   float64
 	DegradedMin     time.Duration // degraded condition must hold this long
 
+	// DNS, web and public-IP probes.
+	DNSServers       []string // "system" means the first nameserver in /etc/resolv.conf
+	DNSQuery         string
+	DNSInterval      time.Duration
+	HTTPTargets      []string
+	HTTPInterval     time.Duration
+	HTTPTimeout      time.Duration
+	PublicIPInterval time.Duration // 0 disables
+
 	// Alerts.
 	DiscordWebhookURL string
 	AlertMinOutage    time.Duration
 	AlertCoalesce     time.Duration
 	AlertISPHopChange bool
+	AlertIPChange     bool
 }
 
 // Defaults returns the configuration used when no environment variables are set.
@@ -77,8 +88,17 @@ func Defaults() Config {
 		DegradedP95Ms:   100,
 		DegradedMin:     2 * time.Minute,
 
+		DNSServers:       []string{"system", "1.1.1.1"},
+		DNSQuery:         "www.google.com",
+		DNSInterval:      30 * time.Second,
+		HTTPTargets:      []string{"https://www.google.com/generate_204"},
+		HTTPInterval:     time.Minute,
+		HTTPTimeout:      10 * time.Second,
+		PublicIPInterval: 5 * time.Minute,
+
 		AlertMinOutage: 30 * time.Second,
 		AlertCoalesce:  5 * time.Minute,
+		AlertIPChange:  true,
 	}
 }
 
@@ -160,6 +180,35 @@ func Load(getenv func(string) string) (Config, error) {
 	duration("ALERT_MIN_OUTAGE", &c.AlertMinOutage, 0)
 	duration("ALERT_COALESCE", &c.AlertCoalesce, 0)
 	boolean("ALERT_ISP_HOP_CHANGE", &c.AlertISPHopChange)
+	boolean("ALERT_IP_CHANGE", &c.AlertIPChange)
+	list("DNS_SERVERS", &c.DNSServers)
+	str("DNS_QUERY", &c.DNSQuery)
+	duration("DNS_INTERVAL", &c.DNSInterval, 5*time.Second)
+	list("HTTP_TARGETS", &c.HTTPTargets)
+	duration("HTTP_INTERVAL", &c.HTTPInterval, 10*time.Second)
+	duration("HTTP_TIMEOUT", &c.HTTPTimeout, time.Second)
+	duration("PUBLIC_IP_INTERVAL", &c.PublicIPInterval, 0)
+
+	for _, v := range []*[]string{&c.DNSServers, &c.HTTPTargets} {
+		if len(*v) == 1 && strings.EqualFold((*v)[0], Off) {
+			*v = nil // "off" disables the probe
+		}
+	}
+	for _, u := range c.HTTPTargets {
+		if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+			fail("HTTP_TARGETS", fmt.Errorf("%q is not an http(s) URL", u))
+		}
+	}
+	for _, srv := range c.DNSServers {
+		if srv != "system" {
+			if _, err := netip.ParseAddr(srv); err != nil {
+				fail("DNS_SERVERS", fmt.Errorf("%q is not an IP address or \"system\"", srv))
+			}
+		}
+	}
+	if c.PublicIPInterval > 0 && c.PublicIPInterval < time.Minute {
+		fail("PUBLIC_IP_INTERVAL", fmt.Errorf("want 0 (off) or at least 1m"))
+	}
 
 	if u := c.DiscordWebhookURL; u != "" && !strings.HasPrefix(u, "https://") {
 		// Don't echo the value: it contains the webhook token.

@@ -133,3 +133,32 @@ func PickISPHop(hops []probe.Hop, gateway netip.Addr) netip.Addr {
 // IsCGNAT reports whether addr is in 100.64.0.0/10. Tailscale also uses this
 // range, which matters when diagnosing exit-node routing.
 func IsCGNAT(addr netip.Addr) bool { return cgnat.Contains(addr) }
+
+// SystemNameserver returns the first nameserver in /etc/resolv.conf: the
+// resolver this host (and so every app on it) actually uses.
+func SystemNameserver() (netip.Addr, error) {
+	f, err := os.Open("/etc/resolv.conf")
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer f.Close()
+	return parseResolvConf(f)
+}
+
+func parseResolvConf(r io.Reader) (netip.Addr, error) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) >= 2 && f[0] == "nameserver" {
+			// Drop any zone (fe80::1%eth0): the UDP probe can't use it.
+			addr, err := netip.ParseAddr(strings.SplitN(f[1], "%", 2)[0])
+			if err == nil {
+				return addr.Unmap(), nil
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return netip.Addr{}, err
+	}
+	return netip.Addr{}, fmt.Errorf("no nameserver in /etc/resolv.conf")
+}

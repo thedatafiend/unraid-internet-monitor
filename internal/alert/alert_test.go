@@ -283,3 +283,25 @@ func TestFmtDur(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryMessageIncludesRoute(t *testing.T) {
+	end := int64(160)
+	ev := model.Event{ID: 1, Kind: model.EventOutage, Class: model.ClassISPEdge, StartedAt: 100, EndedAt: &end,
+		Details: map[string]any{"trace_last_hop": "207.204.56.1", "trace_last_ttl": 2}}
+	m := outageResolved(ev, 170)
+	last := m.Fields[len(m.Fields)-1]
+	if last.Name != "Route when it started" || !strings.Contains(last.Value, "hop 2") || !strings.Contains(last.Value, "207.204.56.1") {
+		t.Fatalf("fields = %+v", m.Fields)
+	}
+}
+
+func TestPublicIPChangeAlert(t *testing.T) {
+	m, snd, now := newTestManager(t)
+	m.PublicIPChanged("203.0.113.1", "203.0.113.99", now.Unix()) // IPChange off in newTestManager
+	m.cfg.IPChange = true
+	m.PublicIPChanged("203.0.113.1", "203.0.113.99", now.Unix())
+	m.Deliver(context.Background())
+	if len(snd.sent) != 1 || !strings.Contains(snd.sent[0].Description, "203.0.113.99") {
+		t.Fatalf("sent %v", titles(snd.sent))
+	}
+}

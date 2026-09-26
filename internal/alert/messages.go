@@ -43,6 +43,7 @@ const (
 	KindDegradedCleared = "degraded_cleared"
 	KindDigest          = "digest"
 	KindISPHopChange    = "isp_hop_change"
+	KindIPChange        = "ip_change"
 	KindTest            = "test"
 )
 
@@ -113,6 +114,10 @@ func outageResolved(ev model.Event, now int64) Message {
 	if v, ok := num(ev.Details, "isp_down_pct"); ok {
 		m.Fields = append(m.Fields, Field{Name: "ISP edge unreachable", Value: fmt.Sprintf("%.0f%% of the time", v), Inline: true})
 	}
+	if hop, ok := ev.Details["trace_last_hop"].(string); ok {
+		ttl, _ := num(ev.Details, "trace_last_ttl")
+		m.Fields = append(m.Fields, Field{Name: "Route when it started", Value: fmt.Sprintf("Replies stopped after hop %.0f (`%s`)", ttl, hop)})
+	}
 	return m
 }
 
@@ -182,6 +187,15 @@ func ispHopChanged(oldHop, newHop string, now int64) Message {
 	return Message{
 		Title:       "🔵 ISP edge router changed",
 		Description: fmt.Sprintf("`%s` → `%s`. Your ISP may have rerouted your connection.", oldHop, newHop),
+		Color:       colorBlue,
+		Time:        now,
+	}
+}
+
+func ipChanged(oldIP, newIP string, now int64) Message {
+	return Message{
+		Title:       "🔵 Public IP address changed",
+		Description: fmt.Sprintf("`%s` → `%s`. Your ISP assigned a new address, which usually follows a reconnect or modem restart.", oldIP, newIP),
 		Color:       colorBlue,
 		Time:        now,
 	}

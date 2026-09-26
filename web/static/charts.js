@@ -98,7 +98,7 @@ export function timeChart(el, opts) {
       tipHide: s.tipHide,
     };
     if (s.bars) {
-      def.paths = uPlot.paths.bars({ size: [0.7, 24], align: 0 });
+      def.paths = uPlot.paths.bars({ size: [0.7, 24], align: 1 }); // a bucket starts at its timestamp
       def.fill = s.color;
       def.width = 0;
     } else if (s.fillAlpha) {

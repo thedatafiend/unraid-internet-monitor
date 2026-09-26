@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"time"
 
 	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
@@ -27,6 +28,7 @@ type Info struct {
 	ISPHop        string      `json:"isp_hop"`
 	ISPHopSource  string      `json:"isp_hop_source"`
 	Trace         []probe.Hop `json:"trace"`
+	DNSSystem     string      `json:"dns_system"` // the host's resolver, from /etc/resolv.conf
 	IPv6Mode      string      `json:"ipv6_mode"`
 	IPv6Available bool        `json:"ipv6_available"`
 	DiscoveredAt  time.Time   `json:"discovered_at"`
@@ -188,6 +190,46 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 		}
 	}
 
+	// DNS resolvers.
+	for _, srv := range cfg.DNSServers {
+		key, name := "dns:"+srv, ""
+		var addr netip.Addr
+		if srv == "system" {
+			a, err := discover.SystemNameserver()
+			if err != nil {
+				warn("system DNS resolver: %v", err)
+				continue
+			}
+			addr, name = a, "DNS (system)"
+			info.DNSSystem = a.String()
+		} else {
+			addr = netip.MustParseAddr(srv) // validated by config
+			name = "DNS (" + srv + ")"
+			if n := knownNames[srv]; n != "" {
+				name = "DNS (" + n + ")"
+			}
+		}
+		if addr.Is6() && !info.IPv6Available {
+			warn("DNS server %s is IPv6 but IPv6 is not available", addr)
+			continue
+		}
+		targets = append(targets, model.Target{
+			Key: key, Kind: model.KindDNS, Role: model.RoleDNS, Name: name,
+			Addr: addr, Family: model.FamilyOf(addr), Enabled: true,
+		})
+	}
+
+	// Web endpoints.
+	for _, u := range cfg.HTTPTargets {
+		name := u
+		if pu, err := url.Parse(u); err == nil && pu.Host != "" {
+			name = "Web (" + pu.Hostname() + ")"
+		}
+		targets = append(targets, model.Target{
+			Key: "http:" + u, Kind: model.KindHTTP, Role: model.RoleHTTP, Name: name, URL: u, Enabled: true,
+		})
+	}
+
 	// Custom targets.
 	for _, c := range cfg.CustomTargets {
 		addr, err := resolve(ctx, c.Host, info.IPv6Available)
@@ -196,7 +238,7 @@ func Discover(ctx context.Context, cfg config.Config, p4, p6 *probe.Pinger) ([]m
 			continue
 		}
 		targets = append(targets, model.Target{
-			Key: "icmp:custom:" + c.Name, Kind: "icmp", Role: model.RoleCustom, Name: c.Name,
+			Key: "icmp:custom:" + c.Name, Kind: model.KindICMP, Role: model.RoleCustom, Name: c.Name,
 			Addr: addr, Family: model.FamilyOf(addr), Enabled: true,
 		})
 	}
@@ -216,7 +258,7 @@ func internetTarget(host string, addr netip.Addr) model.Target {
 		name = host
 	}
 	return model.Target{
-		Key: "icmp:" + addr.String(), Kind: "icmp", Role: model.RoleInternet, Name: name,
+		Key: "icmp:" + addr.String(), Kind: model.KindICMP, Role: model.RoleInternet, Name: name,
 		Addr: addr, Family: model.FamilyOf(addr), Enabled: true,
 	}
 }
@@ -226,7 +268,7 @@ func internetTarget(host string, addr netip.Addr) model.Target {
 func roleTarget(role, name string, addr netip.Addr) model.Target {
 	fam := model.FamilyOf(addr)
 	return model.Target{
-		Key: "icmp:" + role + ":" + fam, Kind: "icmp", Role: role, Name: name,
+		Key: "icmp:" + role + ":" + fam, Kind: model.KindICMP, Role: role, Name: name,
 		Addr: addr, Family: fam, Enabled: true,
 	}
 }

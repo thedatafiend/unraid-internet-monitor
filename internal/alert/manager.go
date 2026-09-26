@@ -24,6 +24,7 @@ type Config struct {
 	MinOutage    time.Duration // shorter outages are recorded but not alerted
 	Coalesce     time.Duration // alerts of one kind within this window are merged into a digest
 	ISPHopChange bool          // alert when the ISP edge router changes
+	IPChange     bool          // alert when the public IP address changes
 }
 
 // Sender delivers one message.
@@ -167,6 +168,16 @@ func (m *Manager) ISPHopChanged(oldHop, newHop string, now int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.enqueue(KindISPHopChange, ispHopChanged(oldHop, newHop, now), now)
+}
+
+// PublicIPChanged reports a new public address, when enabled.
+func (m *Manager) PublicIPChanged(oldIP, newIP string, now int64) {
+	if !m.Enabled() || !m.cfg.IPChange {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enqueue(KindIPChange, ipChanged(oldIP, newIP, now), now)
 }
 
 // Test queues a test message.

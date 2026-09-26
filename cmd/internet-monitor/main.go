@@ -124,6 +124,7 @@ func serve() error {
 	}
 	alerts := alert.NewManager(alert.Config{
 		MinOutage: cfg.AlertMinOutage, Coalesce: cfg.AlertCoalesce, ISPHopChange: cfg.AlertISPHopChange,
+		IPChange: cfg.AlertIPChange,
 	}, sender, st, log)
 	alertsDone := make(chan struct{})
 	go func() { defer close(alertsDone); alerts.Run(ctx) }()

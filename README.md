@@ -7,10 +7,14 @@ Tailscale.
 
 The design is in [docs/PLAN.md](docs/PLAN.md).
 
-**Status:** M3 is done. The app pings your router, your ISP's edge router and
-public resolvers once a second. It detects outages (and says whether the break is
-your LAN, your ISP's connection, or further upstream), slowdowns, and single-target
-failures. It keeps 30 days of history in SQLite and sends Discord alerts.
+**Status:** M5 is done. The app pings your router, your ISP's edge router and
+public resolvers once a second. It times DNS lookups (every 30 s) and a fresh
+HTTPS request (every minute, split into DNS, connect, TLS and server time), and
+tracks your public IP address. It detects outages (and says whether the break is
+your LAN, your ISP's connection, or further upstream), slowdowns, and DNS or web
+failures while ping still works. When an outage starts, it records the route so
+you can see where packets stopped. It keeps 30 days of history in SQLite and sends
+Discord alerts.
 
 The web UI has four pages:
 
@@ -88,13 +92,14 @@ internet targets. If `ISP hop:` says `none`, your ISP filters those probes; set
 
 What you get:
 
-- **Outage:** after 30 s, and again on recovery with the duration and likely
-  cause. When the whole internet is down, Discord is unreachable too, so you get
+- **Outage:** after 30 s, and again on recovery with the duration, the likely
+  cause, and the last router that answered when it started. When the whole internet is down, Discord is unreachable too, so you get
   a single "restored" message once the connection is back.
 - **Degraded:** loss of at least 2%, or p95 latency over 100 ms, sustained for 2
   minutes. You get a message when it starts and when it clears.
 - **Flapping:** several outages in quick succession are batched into one digest
   instead of a burst of messages.
+- **Public IP change:** the old and new address (turn off with `ALERT_IP_CHANGE=false`).
 
 ## Configuration
 
@@ -120,6 +125,12 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `ALERT_MIN_OUTAGE` | `30s` | Shorter outages are recorded but not alerted |
 | `ALERT_COALESCE` | `5m` | Window for batching repeated alerts into a digest |
 | `ALERT_ISP_HOP_CHANGE` | `false` | Alert when your ISP's edge router changes |
+| `ALERT_IP_CHANGE` | `true` | Alert when your public IP changes |
+| `DNS_SERVERS` | `system,1.1.1.1` | Resolvers to time; `system` is the one in `/etc/resolv.conf`; `off` disables |
+| `DNS_QUERY` / `DNS_INTERVAL` | `www.google.com` / `30s` | |
+| `HTTP_TARGETS` | `https://www.google.com/generate_204` | URLs fetched over a fresh connection; `off` disables |
+| `HTTP_INTERVAL` / `HTTP_TIMEOUT` | `1m` / `10s` | |
+| `PUBLIC_IP_INTERVAL` | `5m` | `0` disables |
 
 ## API
 
@@ -132,6 +143,9 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `GET /api/targets` | All targets, including disabled ones that still have history |
 | `GET /api/metrics?target=ID&from=&to=&step=` | Stored per-minute history as parallel arrays, downsampled to at most 1000 points |
 | `GET /api/live?seconds=900` | Per-second RTTs from memory (up to 1 h) |
+| `GET /api/traces?event_id=` | Traceroutes: the one taken when an outage started, or recent ones |
+| `GET /api/public-ip` | Public IP history (newest first) |
+| `GET /api/http?target=ID` | Web-check phase timings (DNS, connect, TLS, server) |
 | `GET /api/stream` | Server-sent events: one message per second with every target's RTT and the current state |
 | `GET /api/config` | Effective settings (the webhook URL is reported only as set or unset) |
 | `GET /healthz` | 200 once probes are running. Used by the Docker healthcheck |

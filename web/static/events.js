@@ -1,8 +1,8 @@
 // Events: outages, degradations and other changes, with summary numbers.
-import { h, getJSON, fmt, now, KIND, CAUSE, statusIcon, segmented, fill } from './util.js';
+import { h, getJSON, fmt, now, CAUSE, statusIcon, segmented, fill, kindOf, routeTable } from './util.js';
 
 const RANGES = [['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
-const KINDS = [['', 'All events'], ['outage', 'Outages'], ['degraded', 'Degraded'], ['partial', 'Target unreachable'], ['isp_hop_change', 'ISP route changes']];
+const KINDS = [['', 'All events'], ['outage', 'Outages'], ['degraded', 'Degraded'], ['partial', 'Target unreachable'], ['ip_change', 'Public IP changes'], ['isp_hop_change', 'ISP route changes']];
 
 const DETAIL_LABELS = {
   down_ticks: ['Seconds without internet', v => String(v)],
@@ -16,6 +16,12 @@ const DETAIL_LABELS = {
   interrupted: ['Note', () => 'monitoring stopped during this event; the end time is approximate'],
   old: ['Previous ISP edge', v => String(v)],
   new: ['New ISP edge', v => String(v)],
+  old_ipv4: ['Previous IPv4', v => v || '–'],
+  new_ipv4: ['New IPv4', v => v || '–'],
+  old_ipv6: ['Previous IPv6', v => v || '–'],
+  new_ipv6: ['New IPv6', v => v || '–'],
+  error: ['Error', v => String(v)],
+  trace_last_hop: ['Last router that answered', v => String(v)],
 };
 
 export async function mount(root, ctx) {
@@ -86,22 +92,38 @@ function stat(label, value, sub) {
 function where(e) {
   if (e.kind === 'partial') return e.scope === 'ip6' ? 'IPv6' : e.scope;
   if (e.kind === 'isp_hop_change') return `${e.details.old} → ${e.details.new}`;
+  if (e.kind === 'ip_change') {
+    const d = e.details;
+    return [d.old_ipv4 !== d.new_ipv4 && `${d.old_ipv4 || '–'} → ${d.new_ipv4}`, d.old_ipv6 !== d.new_ipv6 && `${d.old_ipv6 || '–'} → ${d.new_ipv6}`]
+      .filter(Boolean).join(' · ');
+  }
   return e.scope === 'ip6' ? 'IPv6' : 'Internet (IPv4)';
 }
 
 function row(e) {
-  const k = KIND[e.kind] || { label: e.kind, icon: '●', cls: 'muted' };
+  const k = kindOf(e);
   const details = Object.entries(e.details || {}).filter(([key]) => DETAIL_LABELS[key]);
+  const routeSlot = h('div');
   const detailRow = h('tr', { class: 'details', hidden: true },
     h('td', { colspan: 6 }, h('dl', { class: 'kv' },
       ...details.flatMap(([key, v]) => [h('dt', { text: DETAIL_LABELS[key][0] }), h('dd', { text: DETAIL_LABELS[key][1](v) })]),
-      h('dt', { text: 'Ended' }), h('dd', { text: e.ended_at == null ? 'still ongoing' : fmt.datetime(e.ended_at) }))));
+      h('dt', { text: 'Ended' }), h('dd', { text: e.ended_at == null ? 'still ongoing' : fmt.datetime(e.ended_at) })),
+    routeSlot));
   const toggle = h('button', { class: 'btn ghost', type: 'button', 'aria-expanded': 'false', text: 'Details' });
-  toggle.addEventListener('click', () => {
+  let routeLoaded = false;
+  toggle.addEventListener('click', async () => {
     detailRow.hidden = !detailRow.hidden;
     toggle.setAttribute('aria-expanded', String(!detailRow.hidden));
+    if (!detailRow.hidden && !routeLoaded && e.kind === 'outage') {
+      routeLoaded = true;
+      try {
+        const [tr] = await getJSON(`/api/traces?event_id=${e.id}`);
+        if (tr) fill(routeSlot, h('div', { style: { marginTop: '12px' } }, routeTable(tr.hops, `Route to ${tr.dst} when it started (${fmt.time(tr.ts)})`)));
+      } catch { /* the route is optional detail */ }
+    }
   });
-  const duration = e.kind === 'isp_hop_change' ? '–' : e.ended_at == null ? 'ongoing' : fmt.dur(e.ended_at - e.started_at);
+  const instant = e.kind === 'isp_hop_change' || e.kind === 'ip_change';
+  const duration = instant ? '–' : e.ended_at == null ? 'ongoing' : fmt.dur(e.ended_at - e.started_at);
   return [
     h('tr', {},
       h('td', { text: fmt.datetime(e.started_at) }),

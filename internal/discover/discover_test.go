@@ -73,3 +73,13 @@ func TestPickISPHop(t *testing.T) {
 		})
 	}
 }
+
+func TestParseResolvConf(t *testing.T) {
+	conf := "# generated\nsearch lan\nnameserver 192.168.68.1\nnameserver 1.1.1.1\noptions edns0\n"
+	if got, err := parseResolvConf(strings.NewReader(conf)); err != nil || got != netip.MustParseAddr("192.168.68.1") {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if _, err := parseResolvConf(strings.NewReader("search lan\n")); err == nil {
+		t.Fatal("expected error without nameserver")
+	}
+}

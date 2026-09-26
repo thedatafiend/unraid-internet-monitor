@@ -96,14 +96,25 @@ export const KIND = {
   degraded: { label: 'Degraded', icon: '▲', cls: 'warning' },
   partial: { label: 'Target unreachable', icon: '▲', cls: 'warning' },
   isp_hop_change: { label: 'ISP route changed', icon: '●', cls: 'muted' },
+  ip_change: { label: 'Public IP changed', icon: '●', cls: 'muted' },
 };
 export const CAUSE = {
   local: 'Your router or LAN',
   isp_edge: "Your ISP's connection",
   upstream: 'ISP network or beyond',
 };
-export const ROLE = { gateway: 'Router', isp: 'ISP edge', internet: 'Internet', custom: 'Custom' };
-const ROLE_ORDER = { gateway: 0, isp: 1, internet: 2, custom: 3 };
+export const ROLE = { gateway: 'Router', isp: 'ISP edge', internet: 'Internet', custom: 'Custom', dns: 'DNS', http: 'Web' };
+const ROLE_ORDER = { gateway: 0, isp: 1, internet: 2, custom: 3, dns: 4, http: 5 };
+
+export const isPing = t => t.kind === 'icmp';
+
+// Where a target points: an IP for ping and DNS, the URL's host for web checks.
+export function targetAddress(t) {
+  if (t.kind === 'http') {
+    try { return new URL(t.url).host; } catch { return t.url; }
+  }
+  return t.address;
+}
 
 export function statusIcon(s) {
   return h('span', { class: 'status-icon ' + s.cls, 'aria-hidden': 'true', text: s.icon });
@@ -178,4 +189,36 @@ export function segmented(options, current, onPick, label) {
     }));
   }
   return wrap;
+}
+
+// kindOf labels an event, naming DNS and web failures explicitly.
+export function kindOf(e) {
+  if (e.kind === 'partial' && e.details) {
+    if (e.details.role === 'dns') return { label: 'DNS failing', icon: '▲', cls: 'warning' };
+    if (e.details.role === 'http') return { label: 'Web check failing', icon: '▲', cls: 'warning' };
+  }
+  return KIND[e.kind] || { label: e.kind, icon: '●', cls: 'muted' };
+}
+
+// routeTable renders traceroute hops ({ttl, address, rtt_ms, reached}),
+// listing routers that answered and collapsing the silent tail into one row.
+export function routeTable(hops, caption) {
+  let last = -1;
+  hops.forEach((hp, i) => { if (hp.address) last = i; });
+  const shown = hops.slice(0, last + 1);
+  const rows = shown.map(hp => h('tr', {},
+    h('td', { class: 'num', text: String(hp.ttl) }),
+    h('td', { text: hp.address ? hp.address + (hp.reached ? ' (destination)' : '') : 'no reply' }),
+    h('td', { class: 'num', text: hp.address ? fmt.ms(hp.rtt_ms) : '–' })));
+  if (last < hops.length - 1 && !(last >= 0 && hops[last].reached)) {
+    const from = hops[last + 1].ttl;
+    rows.push(h('tr', {}, h('td', { class: 'num', text: last < 0 ? `1–${hops[hops.length - 1].ttl}` : `${from}+` }),
+      h('td', { class: 'secondary', text: last < 0 ? 'No router answered, not even the first one' : `No reply from hop ${from} onwards` }),
+      h('td', { class: 'num', text: '–' })));
+  }
+  return h('div', {},
+    caption ? h('div', { class: 'secondary', text: caption }) : null,
+    h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', { class: 'num', text: 'Hop' }), h('th', { text: 'Router' }), h('th', { class: 'num', text: 'Round trip' }))),
+      h('tbody', {}, ...rows))));
 }

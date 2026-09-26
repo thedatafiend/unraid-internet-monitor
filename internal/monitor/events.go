@@ -48,13 +48,17 @@ func (e *Engine) advance(ctx context.Context, now, delay int64) {
 			}
 			e.log.Info("event opened", "kind", ev.Kind, "scope", ev.Scope, "class", ev.Class, "started", time.Unix(ev.StartedAt, 0))
 			e.alerts.EventOpened(*ev, now)
+			if ev.Kind == model.EventOutage && ev.Scope == model.FamilyV4 && ev.ID != 0 {
+				go e.traceOutage(ctx, ev.ID)
+			}
 			continue
 		}
-		if err := e.st.UpdateEvent(ctx, *ev); err != nil {
+		closed := e.withTrace(*ev)
+		if err := e.st.UpdateEvent(ctx, closed); err != nil {
 			e.log.Error("updating event", "kind", ev.Kind, "err", err)
 		}
 		e.log.Info("event closed", "kind", ev.Kind, "scope", ev.Scope, "class", ev.Class, "duration", time.Duration(ev.Duration(now))*time.Second)
-		e.alerts.EventClosed(*ev, now)
+		e.alerts.EventClosed(closed, now)
 	}
 
 	snap := e.det.Snapshot()

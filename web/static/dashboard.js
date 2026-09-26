@@ -1,8 +1,8 @@
 // Dashboard: live state, headline numbers, the last 15 minutes of latency,
 // per-target details and recent events.
 import {
-  h, getJSON, fmt, now, STATUS, KIND, CAUSE, ROLE, statusIcon, mosLabel,
-  loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState,
+  h, getJSON, fmt, now, STATUS, CAUSE, ROLE, statusIcon, mosLabel,
+  loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState, targetAddress, kindOf,
 } from './util.js';
 import { timeChart, legend, sparkline } from './charts.js';
 
@@ -22,9 +22,10 @@ export async function mount(root, ctx) {
   const heroLabel = h('span', { text: '…' });
   const heroSub = h('p', { class: 'hero-sub' });
   const liveBadge = h('span', { class: 'live', text: 'Connecting…' });
+  const publicIP = h('span', { class: 'secondary' });
   const hero = h('section', { class: 'card hero', 'aria-live': 'polite' },
     h('div', {}, h('h1', { class: 'hero-state' }, heroIcon, heroLabel), heroSub),
-    liveBadge);
+    h('div', { class: 'hero-side' }, liveBadge, publicIP));
 
   const tiles = {
     uptime: tile('Uptime, last 24 hours'),
@@ -60,7 +61,19 @@ export async function mount(root, ctx) {
       h('a', { href: '#/events', class: 'secondary', text: 'All events →' })),
     eventsList);
 
-  fill(root, hero, warnBox, kpis, chartCard, h('div', { class: 'grid-wide' }, targetsCard, eventsCard));
+  const serviceRows = h('tbody');
+  const servicesCard = h('section', { class: 'card' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'DNS & web' }),
+      h('p', { text: 'Name lookups and a fresh HTTPS request, checked every 30–60 s · last 15 minutes' })),
+    h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {},
+        h('th', { text: 'Check' }), h('th', { text: 'Server' }), h('th', { text: 'Last result' }),
+        h('th', { class: 'num', text: 'Average' }), h('th', { class: 'num', text: 'p95' }), h('th', { class: 'num', text: 'Success' }))),
+      serviceRows)));
+
+  fill(root, hero, warnBox, kpis, chartCard,
+    h('div', { class: 'grid-wide' }, targetsCard, eventsCard),
+    servicesCard);
 
   // ---- Data ----
   targets = await loadTargets();
@@ -180,6 +193,25 @@ export async function mount(root, ctx) {
     fill(warnBox, h('strong', { text: 'Check your setup' }),
       h('ul', {}, ...warnings.map(w => h('li', { text: w }))));
 
+    const ip = status.public_ip || {};
+    publicIP.textContent = ip.ipv4 || ip.ipv6 ? 'Public IP ' + [ip.ipv4, ip.ipv6].filter(Boolean).join(' · ') : '';
+
+    const services = byRole(status.services || []);
+    servicesCard.hidden = services.length === 0;
+    fill(serviceRows, services.map(s => {
+      const tg = targets.find(t => t.id === s.id) || s;
+      let last = '–';
+      if (s.last_at) last = s.last_ok ? fmt.ms(s.last_ms) : 'failed: ' + (s.last_error || 'no reply');
+      const phases = s.last_http && s.last_ok ? phaseText(s.last_http) : '';
+      return h('tr', {},
+        h('td', {}, h('span', { class: 'name-cell' }, lineKey(colorOf(tg)), s.name)),
+        h('td', { class: 'secondary', text: targetAddress(s) }),
+        h('td', {}, h('div', { text: last }), phases ? h('div', { class: 'muted', style: { fontSize: '12px' }, text: phases }) : null),
+        h('td', { class: 'num', text: fmt.msShort(s.avg_ms) }),
+        h('td', { class: 'num', text: fmt.msShort(s.p95_ms) }),
+        h('td', { class: 'num', text: s.success_pct == null ? '–' : fmt.pct(s.success_pct) }));
+    }));
+
     const byId = new Map(status.targets.map(t => [t.id, t]));
     fill(targetRows, ...order.map(tg => {
       const t = byId.get(tg.id);
@@ -240,8 +272,10 @@ export async function mount(root, ctx) {
         return;
       }
       fill(eventsList, ...recent.map(e => {
-        const k = KIND[e.kind] || { label: e.kind, icon: '●', cls: 'muted' };
-        const what = e.kind === 'outage' ? CAUSE[e.class] || '' : e.kind === 'partial' ? e.scope : '';
+        const k = kindOf(e);
+        const what = e.kind === 'outage' ? CAUSE[e.class] || ''
+          : e.kind === 'partial' ? e.scope
+          : e.kind === 'ip_change' ? `${e.details.old_ipv4 || e.details.old_ipv6} → ${e.details.new_ipv4 || e.details.new_ipv6}` : '';
         return h('li', {},
           h('span', { class: 'name-cell' }, statusIcon(k), h('strong', { text: k.label })),
           what ? h('span', { class: 'secondary', text: what }) : null,
@@ -250,6 +284,13 @@ export async function mount(root, ctx) {
       }));
     } catch { /* keep last */ }
   }
+}
+
+// phaseText describes where a web request's time went.
+function phaseText(hs) {
+  const parts = [['DNS', hs.dns_ms], ['connect', hs.connect_ms], ['TLS', hs.tls_ms], ['server', hs.ttfb_ms]]
+    .filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmt.msShort(v)}`);
+  return parts.length ? parts.join(' · ') + ' ms' : '';
 }
 
 function tile(label) {

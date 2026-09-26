@@ -97,6 +97,7 @@ label.check { display: inline-flex; align-items: center; gap: 6px; color: var(--
 .hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .hero-state { display: flex; align-items: center; gap: 12px; font-size: 48px; font-weight: 600; line-height: 1.1; }
 .hero-sub { color: var(--text-secondary); margin-top: 4px; }
+.hero-side { display: grid; justify-items: end; gap: 4px; font-size: 13px; }
 .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .live.on::before { background: var(--good); }
@@ -154,5 +155,6 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
   .tile .value { font-size: 24px; }
   main { padding: 12px; gap: 12px; }
   .hero-state { font-size: 36px; }
+  .hero-side { justify-items: start; }
   .grid-2 { grid-template-columns: 1fr; }
 }

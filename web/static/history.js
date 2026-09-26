@@ -1,5 +1,5 @@
 // History: stored per-minute data for a time range, with outages shaded.
-import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill } from './util.js';
+import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill, isPing } from './util.js';
 import { timeChart, legend, alpha } from './charts.js';
 
 const PRESETS = [['1h', '1 h', 3600], ['6h', '6 h', 6 * 3600], ['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
@@ -41,9 +41,12 @@ export async function mount(root, ctx) {
 
   function renderFilters() {
     const pick = v => { state.preset = v; state.from = state.to = null; renderFilters(); load(); };
+    const opt = t => h('option', { value: String(t.id), text: t.name });
+    const svc = targets.filter(t => !isPing(t));
     const sel = h('select', { class: 'btn', 'aria-label': 'Target' },
       h('option', { value: 'all', text: 'All targets' }),
-      ...targets.map(t => h('option', { value: String(t.id), text: t.name })));
+      h('optgroup', { label: 'Ping' }, ...targets.filter(isPing).map(opt)),
+      svc.length ? h('optgroup', { label: 'DNS & web' }, ...svc.map(opt)) : null);
     sel.value = state.target;
     sel.addEventListener('change', () => { state.target = sel.value; load(); });
     const tableToggle = h('input', { type: 'checkbox' });
@@ -110,6 +113,12 @@ export async function mount(root, ctx) {
     const common = { shade: () => shadeIvs, sync: 'history', onZoom: (a, b) => { state.from = a; state.to = b; renderFilters(); load(); } };
     const single = shown.length === 1 ? shown[0] : null;
     const cards = [];
+    // Ping targets and DNS/web checks are charted separately: different
+    // cadences, and web requests are an order of magnitude slower.
+    const pick = pred => { const idx = shown.map((t, i) => (pred(t) ? i : -1)).filter(i => i >= 0); return [idx.map(i => shown[i]), idx.map(i => metrics[i])]; };
+    const [pingShown, pingMetrics] = pick(isPing);
+    const [svcShown, svcMetrics] = pick(t => !isPing(t));
+    const singleIsPing = single && isPing(single);
 
     // Latency
     let latSeries, latData, latBands = [];
@@ -119,11 +128,11 @@ export async function mount(root, ctx) {
       latData = [col(metrics[0], 'p95'), col(metrics[0], 'p50')];
       latBands = [[1, 2, alpha(c, 0.12)]];
     } else {
-      latSeries = shown.map(t => ({ label: t.name, color: colorOf(t) }));
-      latData = metrics.map(m => col(m, 'avg'));
+      latSeries = pingShown.map(t => ({ label: t.name, color: colorOf(t) }));
+      latData = pingMetrics.map(m => col(m, 'avg'));
     }
     cards.push(chartCard(
-      'Latency',
+      single && !singleIsPing ? 'Response time' : 'Latency',
       single ? `${single.name}: median with the 95th-percentile band, per ${fmt.dur(step)}` : `Average round-trip time per target, per ${fmt.dur(step)}`,
       latSeries, latData, { yFmt: v => fmt.msShort(v) + ' ms', yMaxAtLeast: 5, bands: latBands }, true));
 
@@ -142,16 +151,29 @@ export async function mount(root, ctx) {
       });
     }
     const anyLoss = lossData.some(v => v > 0);
-    cards.push(chartCard('Packet loss', anyLoss ? `${lossLabel}, per ${fmt.dur(step)}` : `${lossLabel}: no packet loss in this range`,
+    const lossTitle = single && !singleIsPing ? 'Failed checks' : 'Packet loss';
+    cards.push(chartCard(lossTitle, anyLoss ? `${lossLabel}, per ${fmt.dur(step)}` : `${lossLabel}: no ${lossTitle.toLowerCase()} in this range`,
       [{ label: lossLabel, color: lossColor, bars: true }], [lossData], { yFmt: v => fmt.pct(v), yMaxAtLeast: 1, yMax: 100, height: 160 }, false));
 
-    // Jitter
-    const jitSeries = single ? [{ label: single.name, color: colorOf(single) }] : shown.map(t => ({ label: t.name, color: colorOf(t) }));
-    const jitData = (single ? [metrics[0]] : metrics).map(m => col(m, 'jitter'));
-    cards.push(chartCard('Jitter', `Average change between consecutive round trips, per ${fmt.dur(step)}`,
-      jitSeries, jitData, { yFmt: v => fmt.msShort(v) + ' ms', yMaxAtLeast: 1, height: 180 }, !single));
+    // Jitter (ping only: two DNS lookups a minute say little about jitter)
+    if (!single || singleIsPing) {
+      const jitSeries = single ? [{ label: single.name, color: colorOf(single) }] : pingShown.map(t => ({ label: t.name, color: colorOf(t) }));
+      const jitData = (single ? [metrics[0]] : pingMetrics).map(m => col(m, 'jitter'));
+      cards.push(chartCard('Jitter', `Average change between consecutive round trips, per ${fmt.dur(step)}`,
+        jitSeries, jitData, { yFmt: v => fmt.msShort(v) + ' ms', yMaxAtLeast: 1, height: 180 }, !single));
+    }
 
-    const tableCard = state.table ? dataTable(xs, shown, metrics, col, single, lossData) : null;
+    // DNS lookups and web requests
+    if (!single && svcShown.length) {
+      cards.push(chartCard('DNS & web response time',
+        `Name lookups and a fresh HTTPS request (DNS, connect, TLS and server time), per ${fmt.dur(step)}. Gaps are failed checks.`,
+        svcShown.map(t => ({ label: t.name, color: colorOf(t) })), svcMetrics.map(m => col(m, 'avg')),
+        { yFmt: v => fmt.msShort(v) + ' ms', yMaxAtLeast: 10, height: 200 }, true));
+    }
+
+    const tableCard = state.table
+      ? (single ? dataTable(xs, shown, metrics, col, single, lossData) : dataTable(xs, pingShown, pingMetrics, col, null, lossData))
+      : null;
     fill(body, shadeLegend, ...cards, ...(tableCard ? [tableCard] : []));
     // Charts need their final width, so build them after insertion.
     for (const c of cards) c.build();

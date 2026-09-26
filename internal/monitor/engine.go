@@ -39,6 +39,9 @@ type Engine struct {
 	det     *detect.Detector // owned by detectLoop
 	ticks   chan detect.Tick
 	live    *hub
+	svc     *services
+	http    *probe.HTTPProber
+	ipf     *probe.IPFetcher
 
 	lastTick atomic.Int64
 
@@ -58,6 +61,9 @@ func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert
 		det:      detect.New(detectConfig(cfg)),
 		ticks:    make(chan detect.Tick, 16),
 		live:     newHub(),
+		svc:      newServices(),
+		http:     probe.NewHTTPProber(cfg.HTTPTimeout),
+		ipf:      probe.DefaultIPFetcher(),
 		rings:    make(map[int64]*aggregate.Ring),
 		detState: detect.Snapshot{State: detect.StateUnknown},
 	}
@@ -75,10 +81,29 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	e.prune(ctx)
 
+	if p, err := e.st.LatestPublicIP(ctx); err == nil {
+		e.svc.pubIP = p
+	}
+
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); e.pingLoop(ctx) }()
-	go func() { defer wg.Done(); e.detectLoop(ctx) }()
+	loops := []func(){
+		func() { e.pingLoop(ctx) },
+		func() { e.detectLoop(ctx) },
+		func() { every(ctx, e.cfg.DNSInterval, func(t time.Time) { e.dnsRound(ctx, t) }) },
+		func() { every(ctx, e.cfg.HTTPInterval, func(t time.Time) { e.httpRound(ctx, t) }) },
+		func() {
+			select { // let discovery and the first pings settle
+			case <-time.After(firstIPCheck):
+			case <-ctx.Done():
+				return
+			}
+			every(ctx, e.cfg.PublicIPInterval, func(t time.Time) { e.ipCheck(ctx, t) })
+		},
+	}
+	wg.Add(len(loops))
+	for _, l := range loops {
+		go func() { defer wg.Done(); l() }()
+	}
 
 	flush := time.NewTicker(flushEvery)
 	disc := time.NewTicker(discoverEvery)
@@ -110,6 +135,19 @@ func (e *Engine) rediscover(ctx context.Context) error {
 	targets, info := Discover(ctx, e.cfg, e.p4, e.p6)
 	for _, w := range info.Warnings {
 		e.log.Warn(w)
+	}
+	if len(info.Trace) > 0 {
+		dst := ""
+		for _, t := range targets {
+			if t.Role == model.RoleInternet && t.Family == model.FamilyV4 {
+				dst = t.Addr.String()
+				break
+			}
+		}
+		tr := &model.Trace{TS: time.Now().Unix(), Reason: "discovery", Dst: dst, Hops: toHops(info.Trace)}
+		if err := e.st.InsertTrace(ctx, tr); err != nil {
+			e.log.Error("storing trace", "err", err)
+		}
 	}
 	stored, err := e.st.Targets(ctx)
 	if err != nil {
@@ -211,7 +249,7 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 		var group []model.Target
 		var addrs []netip.Addr
 		for _, t := range targets {
-			if t.Family == fam.name {
+			if t.Kind == model.KindICMP && t.Family == fam.name {
 				group = append(group, t)
 				addrs = append(addrs, t.Addr)
 			}
@@ -330,13 +368,15 @@ type TargetStatus struct {
 
 // Status is the live overview served by /api/status.
 type Status struct {
-	Now        int64          `json:"now"`
-	State      string         `json:"state"` // unknown | online | degraded | outage
-	Since      int64          `json:"since"`
-	OpenEvents []model.Event  `json:"open_events"`
-	MOS        *float64       `json:"mos"`
-	Targets    []TargetStatus `json:"targets"`
-	Info       Info           `json:"info"`
+	Now        int64           `json:"now"`
+	State      string          `json:"state"` // unknown | online | degraded | outage
+	Since      int64           `json:"since"`
+	OpenEvents []model.Event   `json:"open_events"`
+	MOS        *float64        `json:"mos"`
+	Targets    []TargetStatus  `json:"targets"`  // ping targets
+	Services   []ServiceStatus `json:"services"` // DNS and web targets
+	PublicIP   model.PublicIP  `json:"public_ip"`
+	Info       Info            `json:"info"`
 }
 
 // Status summarises the last minute of live data.
@@ -346,7 +386,8 @@ func (e *Engine) Status(now time.Time) Status {
 	e.mu.RLock()
 	snap := e.detState
 	e.mu.RUnlock()
-	st := Status{Now: now.Unix(), State: snap.State, Since: snap.Since, OpenEvents: snap.Open, Info: e.Info()}
+	st := Status{Now: now.Unix(), State: snap.State, Since: snap.Since, OpenEvents: snap.Open, Info: e.Info(),
+		PublicIP: e.PublicIP(), Targets: []TargetStatus{}, Services: []ServiceStatus{}}
 	if st.OpenEvents == nil {
 		st.OpenEvents = []model.Event{}
 	}
@@ -354,6 +395,10 @@ func (e *Engine) Status(now time.Time) Status {
 	var mosSum float64
 	var mosN int
 	for _, t := range e.Targets() {
+		if t.Kind != model.KindICMP {
+			st.Services = append(st.Services, e.serviceStatus(t, now.Unix()))
+			continue
+		}
 		ring := e.Ring(t.ID)
 		if ring == nil {
 			continue

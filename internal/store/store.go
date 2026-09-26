@@ -60,6 +60,31 @@ var migrations = []string{
 		error           TEXT
 	);
 	CREATE INDEX alert_outbox_due ON alert_outbox(status, next_attempt_at);`,
+
+	`CREATE TABLE http_sample (
+		target_id  INTEGER NOT NULL,
+		ts         INTEGER NOT NULL,
+		ok         INTEGER NOT NULL,
+		status     INTEGER NOT NULL DEFAULT 0,
+		dns_ms REAL, connect_ms REAL, tls_ms REAL, ttfb_ms REAL, total_ms REAL,
+		error      TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (target_id, ts)
+	) WITHOUT ROWID;
+	CREATE TABLE public_ip (
+		ts   INTEGER PRIMARY KEY,
+		ipv4 TEXT NOT NULL DEFAULT '',
+		ipv6 TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE traces (
+		id       INTEGER PRIMARY KEY,
+		ts       INTEGER NOT NULL,
+		reason   TEXT NOT NULL,
+		event_id INTEGER,
+		dst      TEXT NOT NULL,
+		hops     TEXT NOT NULL
+	);
+	CREATE INDEX traces_ts ON traces(ts);
+	CREATE INDEX traces_event ON traces(event_id);`,
 }
 
 // Store wraps the SQLite database.
@@ -135,7 +160,7 @@ func (s *Store) UpsertTarget(ctx context.Context, t model.Target) (int64, error)
 			kind = excluded.kind, role = excluded.role, name = excluded.name,
 			address = excluded.address, family = excluded.family, enabled = 1
 		RETURNING id`,
-		t.Key, t.Kind, t.Role, t.Name, t.Addr.String(), t.Family).Scan(&id)
+		t.Key, t.Kind, t.Role, t.Name, t.Address(), t.Family).Scan(&id)
 	return id, err
 }
 
@@ -172,7 +197,11 @@ func (s *Store) Targets(ctx context.Context) ([]model.Target, error) {
 		if err := rows.Scan(&t.ID, &t.Key, &t.Kind, &t.Role, &t.Name, &addr, &t.Family, &t.Enabled); err != nil {
 			return nil, err
 		}
-		t.Addr, _ = netip.ParseAddr(addr)
+		if t.Kind == model.KindHTTP {
+			t.URL = addr
+		} else {
+			t.Addr, _ = netip.ParseAddr(addr)
+		}
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -275,8 +304,16 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE ended_at IS NOT NULL AND ended_at < ?`, before); err != nil {
-		return n, err
+	for _, q := range []string{
+		`DELETE FROM events WHERE ended_at IS NOT NULL AND ended_at < ?`,
+		`DELETE FROM http_sample WHERE ts < ?`,
+		`DELETE FROM traces WHERE ts < ?`,
+		// Keep the newest public IP row so a change after a long gap is still detected.
+		`DELETE FROM public_ip WHERE ts < ? AND ts < (SELECT max(ts) FROM public_ip)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q, before); err != nil {
+			return n, err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM alert_outbox WHERE status != 'pending' AND created_at < ?`, before-7*86400); err != nil {
