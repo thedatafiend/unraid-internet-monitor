@@ -92,9 +92,9 @@ func TestUptime(t *testing.T) {
 	end := int64(1100)
 	for _, ev := range []*model.Event{
 		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 900, EndedAt: &end}, // clipped to start at 1000
-		{Kind: model.EventOutage, Scope: model.FamilyV6, StartedAt: 1200},              // IPv6 does not count
-		{Kind: model.EventDegraded, Scope: model.FamilyV4, StartedAt: 1300},            // not an outage
-		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 1900},              // open: runs to now
+		{Kind: model.EventOutage, Scope: model.FamilyV6, StartedAt: 1200},               // IPv6 does not count
+		{Kind: model.EventDegraded, Scope: model.FamilyV4, StartedAt: 1300},             // not an outage
+		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 1900},               // open: runs to now
 	} {
 		if err := st.InsertEvent(ctx, ev); err != nil {
 			t.Fatal(err)
