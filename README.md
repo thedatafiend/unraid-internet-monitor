@@ -1,4 +1,4 @@
-# unraid-internet-monitor
+# Unraid Internet Monitor
 
 A lightweight Docker app for Unraid that continuously measures the quality of your
 internet connection. It tracks latency, jitter, packet loss, outages, DNS and web
