@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Internet Monitor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%230ca30c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/uPlot.min.css">
+<link rel="stylesheet" href="app.css">
+<script src="vendor/uPlot.iife.min.js" defer></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/"><span id="brandIcon" class="status-icon muted" aria-hidden="true">○</span><span class="brand-text">Internet Monitor</span></a>
+  <nav id="nav" aria-label="Sections">
+    <a href="#/" data-route="">Dashboard</a>
+    <a href="#/history" data-route="history">History</a>
+    <a href="#/events" data-route="events">Events</a>
+    <a href="#/speed" data-route="speed">Speed</a>
+    <a href="#/settings" data-route="settings">Settings</a>
+  </nav>
+  <button id="themeBtn" class="btn ghost" type="button" aria-label="Color theme">Theme: auto</button>
+</header>
+<main id="view" tabindex="-1"></main>
+</body>
+</html>

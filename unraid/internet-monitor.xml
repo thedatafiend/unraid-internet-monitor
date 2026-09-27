@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>internet-monitor</Name>
+  <Repository>ghcr.io/thedatafiend/unraid-internet-monitor:latest</Repository>
+  <Registry>https://github.com/thedatafiend/unraid-internet-monitor/pkgs/container/unraid-internet-monitor</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/thedatafiend/unraid-internet-monitor/issues</Support>
+  <Project>https://github.com/thedatafiend/unraid-internet-monitor</Project>
+  <Overview>Continuously measures your internet connection: latency, jitter and packet loss to your router, your ISP's edge router and public resolvers, once a second. Detects outages and says whether the break is your LAN, your ISP's connection or further upstream. Keeps 30 days of history, sends Discord alerts and serves a web dashboard that keeps working while the internet is down.[br][br]Use host networking (the default here) so the monitor sees your real router. Keep appdata on the cache pool: the database is written once a minute.</Overview>
+  <Category>Network:Other Tools:Utilities Status:Beta</Category>
+  <WebUI>http://[IP]:[PORT:8765]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/thedatafiend/unraid-internet-monitor/HEAD/unraid/internet-monitor.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/thedatafiend/unraid-internet-monitor/HEAD/unraid/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <Requires/>
+
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/internet-monitor" Mode="rw" Description="SQLite database (about 20 MB for 30 days). Keep it on the cache pool." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/internet-monitor</Config>
+  <Config Name="Discord webhook URL" Target="DISCORD_WEBHOOK_URL" Default="" Mode="" Description="Optional. Channel settings, Integrations, Webhooks, New Webhook, Copy URL. Leave empty to turn alerts off." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Listen address" Target="LISTEN_ADDR" Default=":8765" Mode="" Description="Address and port for the web UI. With host networking this is the port on your server; change it if 8765 is taken." Type="Variable" Display="always" Required="false" Mask="false">:8765</Config>
+  <Config Name="Retention (days)" Target="RETENTION_DAYS" Default="30" Mode="" Description="How long history is kept." Type="Variable" Display="always" Required="false" Mask="false">30</Config>
+
+  <Config Name="Internet targets" Target="PING_TARGETS" Default="1.1.1.1,8.8.8.8,9.9.9.9" Mode="" Description="Comma-separated IPs or hostnames pinged every second. The internet counts as down when none of them answer." Type="Variable" Display="advanced" Required="false" Mask="false">1.1.1.1,8.8.8.8,9.9.9.9</Config>
+  <Config Name="Custom targets" Target="CUSTOM_TARGETS" Default="" Mode="" Description="Optional extra hosts to chart, as name=host,name2=host2. Never counted as an internet outage." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Gateway" Target="GATEWAY" Default="auto" Mode="" Description="auto, off, or your router's IP." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="ISP edge router" Target="ISP_HOP" Default="auto" Mode="" Description="auto (found by traceroute), off, or an IP." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="IPv6" Target="IPV6" Default="auto" Mode="" Description="auto, on or off. With auto, IPv6 targets are used only if the server has IPv6 connectivity." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="DNS servers" Target="DNS_SERVERS" Default="system,1.1.1.1" Mode="" Description="Resolvers to check every 30 s. 'system' is the one this server uses (usually your router). 'off' disables DNS checks." Type="Variable" Display="advanced" Required="false" Mask="false">system,1.1.1.1</Config>
+  <Config Name="DNS lookup name" Target="DNS_QUERY" Default="www.google.com" Mode="" Description="Name looked up by the DNS checks." Type="Variable" Display="advanced" Required="false" Mask="false">www.google.com</Config>
+  <Config Name="Web checks" Target="HTTP_TARGETS" Default="https://www.google.com/generate_204" Mode="" Description="URLs fetched every minute over a fresh connection (DNS, connect, TLS and server time are recorded). 'off' disables them." Type="Variable" Display="advanced" Required="false" Mask="false">https://www.google.com/generate_204</Config>
+  <Config Name="Public IP check interval" Target="PUBLIC_IP_INTERVAL" Default="5m" Mode="" Description="How often to look up your public IP address. 0 disables it." Type="Variable" Display="advanced" Required="false" Mask="false">5m</Config>
+  <Config Name="Speed test schedule" Target="SPEEDTEST_SCHEDULE" Default="04:00" Mode="" Description="Daily speed test time (24-hour, local time; a random 0-10 minute delay is added), or off for manual tests only. On a 1 Gbps line each test uses about 2.5 GB." Type="Variable" Display="always" Required="false" Mask="false">04:00</Config>
+  <Config Name="Speed test duration" Target="SPEEDTEST_DURATION" Default="10s" Mode="" Description="How long each direction runs." Type="Variable" Display="advanced" Required="false" Mask="false">10s</Config>
+  <Config Name="Speed test connections" Target="SPEEDTEST_STREAMS" Default="6" Mode="" Description="Parallel connections per direction." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
+  <Config Name="Outage threshold" Target="OUTAGE_THRESHOLD" Default="3s" Mode="" Description="How long every internet target must be unreachable before it counts as an outage." Type="Variable" Display="advanced" Required="false" Mask="false">3s</Config>
+  <Config Name="Degraded: packet loss %" Target="DEGRADED_LOSS_PCT" Default="2" Mode="" Description="Loss over a rolling minute that counts as degraded." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="Degraded: p95 latency (ms)" Target="DEGRADED_P95_MS" Default="100" Mode="" Description="95th-percentile latency over a rolling minute that counts as degraded." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Degraded: minimum duration" Target="DEGRADED_MIN" Default="2m" Mode="" Description="How long the degraded condition must last before it is reported." Type="Variable" Display="advanced" Required="false" Mask="false">2m</Config>
+  <Config Name="Alert: minimum outage" Target="ALERT_MIN_OUTAGE" Default="30s" Mode="" Description="Shorter outages are recorded but not sent to Discord." Type="Variable" Display="advanced" Required="false" Mask="false">30s</Config>
+  <Config Name="Alert: batch window" Target="ALERT_COALESCE" Default="5m" Mode="" Description="Repeated alerts within this window are combined into one message." Type="Variable" Display="advanced" Required="false" Mask="false">5m</Config>
+  <Config Name="Alert: ISP route changes" Target="ALERT_ISP_HOP_CHANGE" Default="false" Mode="" Description="Send a Discord message when your ISP edge router changes." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Alert: public IP changes" Target="ALERT_IP_CHANGE" Default="true" Mode="" Description="Send a Discord message when your public IP address changes." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Alert: minimum download (Mbps)" Target="ALERT_MIN_DOWN_MBPS" Default="0" Mode="" Description="Send a Discord message when a speed test's download is below this. 0 turns it off." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Alert: minimum upload (Mbps)" Target="ALERT_MIN_UP_MBPS" Default="0" Mode="" Description="Send a Discord message when a speed test's upload is below this. 0 turns it off." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User the app runs as after opening its ping socket (99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group the app runs as (100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>
