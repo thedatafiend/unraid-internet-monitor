@@ -318,3 +318,68 @@ func TestSpeedTestAlert(t *testing.T) {
 		t.Fatalf("sent %+v", snd.sent)
 	}
 }
+
+func planned(ev model.Event, start, end int64) model.Event {
+	ev.Planned = &model.Planned{Start: start, End: end, Label: "daily at 03:00 for 10m"}
+	return ev
+}
+
+func TestScheduledRebootIsNotAlerted(t *testing.T) {
+	m, snd, now := newTestManager(t)
+	ctx := context.Background()
+	win := now.Unix()
+	ev := planned(outage(1, win+20), win, win+600) // a 3-minute reboot inside a 10-minute window
+	for s := ev.StartedAt; s <= ev.StartedAt+180; s++ {
+		m.EventOngoing(ev, s)
+	}
+	m.EventClosed(closed(ev, ev.StartedAt+180), ev.StartedAt+183)
+
+	deg := planned(model.Event{ID: 2, Kind: model.EventDegraded, Scope: "ip4", StartedAt: win + 200}, win, win+600)
+	m.EventOpened(deg, win+320)
+	m.EventClosed(closed(deg, win+400), win+400)
+	m.Tick(win + 3600)
+	*now = time.Unix(win+3600, 0)
+	m.Deliver(ctx)
+	if len(snd.sent) != 0 {
+		t.Fatalf("sent %v", titles(snd.sent))
+	}
+}
+
+func TestScheduledRebootOverrunIsAlerted(t *testing.T) {
+	m, snd, now := newTestManager(t)
+	ctx := context.Background()
+	win := now.Unix()
+	ev := planned(outage(1, win+60), win, win+600)
+	for s := ev.StartedAt; s < win+600+30; s++ {
+		m.EventOngoing(ev, s)
+	}
+	*now = time.Unix(win+629, 0)
+	m.Deliver(ctx)
+	if len(snd.sent) != 0 {
+		t.Fatalf("alerted before MinOutage past the window: %v", titles(snd.sent))
+	}
+	m.EventOngoing(ev, win+630)
+	*now = time.Unix(win+631, 0)
+	m.Deliver(ctx)
+	if got := titles(snd.sent); len(got) != 1 || got[0] != "🔴 Internet outage" {
+		t.Fatalf("sent %v", got)
+	}
+	if f := snd.sent[0].Fields; len(f) != 2 || f[1].Name != "Scheduled reboot" {
+		t.Fatalf("fields = %+v", f)
+	}
+	m.EventClosed(closed(ev, win+900), win+903)
+	*now = time.Unix(win+904, 0)
+	m.Deliver(ctx)
+	if got := titles(snd.sent); len(got) != 2 || got[1] != "🟢 Internet restored" {
+		t.Fatalf("sent %v", got)
+	}
+
+	// A slowdown that only shows up after the window closes alerts as usual.
+	deg := planned(model.Event{ID: 2, Kind: model.EventDegraded, Scope: "ip4", StartedAt: win + 500}, win, win+600)
+	m.EventOpened(deg, win+620)
+	*now = time.Unix(win+1000, 0)
+	m.Deliver(ctx)
+	if got := titles(snd.sent); len(got) != 3 {
+		t.Fatalf("sent %v", got)
+	}
+}

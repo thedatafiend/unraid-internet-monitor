@@ -7,6 +7,7 @@ import (
 	"github.com/thedatafiend/unraid-internet-monitor/internal/config"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/detect"
 	"github.com/thedatafiend/unraid-internet-monitor/internal/model"
+	"github.com/thedatafiend/unraid-internet-monitor/internal/schedule"
 )
 
 // detectConfig derives detector thresholds from the runtime config.
@@ -43,6 +44,7 @@ func (e *Engine) advance(ctx context.Context, now, delay int64) {
 	for _, tr := range e.det.Advance(now - delay) {
 		ev := tr.Event
 		if tr.Open {
+			ev.Planned = e.plannedAt(ev.StartedAt)
 			if err := e.st.InsertEvent(ctx, ev); err != nil {
 				e.log.Error("storing event", "kind", ev.Kind, "err", err)
 			}
@@ -70,6 +72,19 @@ func (e *Engine) advance(ctx context.Context, now, delay int64) {
 	e.mu.Lock()
 	e.detState = snap
 	e.mu.Unlock()
+}
+
+// plannedAt returns the scheduled reboot window containing ts, if any. When
+// windows overlap, the one ending last wins.
+func (e *Engine) plannedAt(ts int64) *model.Planned {
+	var p *model.Planned
+	for _, w := range e.cfg.RebootSchedule {
+		start, end, ok := schedule.Schedule{w}.Active(time.Unix(ts, 0))
+		if ok && (p == nil || end.Unix() > p.End) {
+			p = &model.Planned{Start: start.Unix(), End: end.Unix(), Label: w.String()}
+		}
+	}
+	return p
 }
 
 // sendTick hands a finished probe round to the detector loop.

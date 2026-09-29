@@ -86,3 +86,16 @@ func TestLoadErrors(t *testing.T) {
 		t.Error("error message leaks the webhook token")
 	}
 }
+
+func TestLoadRebootSchedule(t *testing.T) {
+	c, err := Load(env(map[string]string{"REBOOT_SCHEDULE": "03:00/5m; sun 04:30"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RebootSchedule.Strings(); !reflect.DeepEqual(got, []string{"daily at 03:00 for 5m", "Sun at 04:30 for 10m"}) {
+		t.Fatalf("schedule = %q", got)
+	}
+	if _, err := Load(env(map[string]string{"REBOOT_SCHEDULE": "3am"})); err == nil || !strings.Contains(err.Error(), "REBOOT_SCHEDULE") {
+		t.Fatalf("bad schedule: err = %v", err)
+	}
+}

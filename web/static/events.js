@@ -1,5 +1,5 @@
 // Events: outages, degradations and other changes, with summary numbers.
-import { h, getJSON, fmt, now, CAUSE, statusIcon, segmented, fill, kindOf, routeTable } from './util.js';
+import { h, getJSON, fmt, now, CAUSE, statusIcon, segmented, fill, kindOf, overran, routeTable } from './util.js';
 
 const RANGES = [['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
 const KINDS = [['', 'All events'], ['outage', 'Outages'], ['degraded', 'Degraded'], ['partial', 'Target unreachable'], ['ip_change', 'Public IP changes'], ['isp_hop_change', 'ISP route changes']];
@@ -70,9 +70,11 @@ export async function mount(root, ctx) {
     frame.classList.remove('loading');
 
     fill(summary, 
-      stat('Uptime', fmt.uptime(up.uptime_pct), up.monitored_s ? `over ${fmt.dur(up.monitored_s)} of monitoring` : 'Collecting data…'),
+      stat('Uptime', fmt.uptime(up.uptime_pct), up.monitored_s
+        ? `over ${fmt.dur(up.monitored_s)} of monitoring${up.planned_reboots ? ', not counting scheduled reboots' : ''}` : 'Collecting data…'),
       stat('Outages', String(up.outages), up.last_outage_at ? 'last ' + fmt.datetime(up.last_outage_at) : 'none in this range'),
-      stat('Total downtime', fmt.dur(up.downtime_s), ''),
+      stat('Total downtime', fmt.dur(up.downtime_s), up.planned_reboots
+        ? `plus ${fmt.dur(up.planned_s)} in ${up.planned_reboots} scheduled reboot${up.planned_reboots === 1 ? '' : 's'}` : ''),
       stat('Longest outage', up.outages ? fmt.dur(up.longest_s) : '–', ''));
 
     evs.reverse();
@@ -100,12 +102,19 @@ function where(e) {
   return e.scope === 'ip6' ? 'IPv6' : 'Internet (IPv4)';
 }
 
+function plannedText(e) {
+  const p = e.planned;
+  const win = `${p.label} (${fmt.clock(p.start)}–${fmt.clock(p.end)})`;
+  return overran(e) ? `began during ${win} but was still down after it` : `during ${win}; not alerted or counted as downtime`;
+}
+
 function row(e) {
   const k = kindOf(e);
   const details = Object.entries(e.details || {}).filter(([key]) => DETAIL_LABELS[key]);
   const routeSlot = h('div');
   const detailRow = h('tr', { class: 'details', hidden: true },
     h('td', { colspan: 6 }, h('dl', { class: 'kv' },
+      ...(e.planned ? [h('dt', { text: 'Scheduled reboot' }), h('dd', { text: plannedText(e) })] : []),
       ...details.flatMap(([key, v]) => [h('dt', { text: DETAIL_LABELS[key][0] }), h('dd', { text: DETAIL_LABELS[key][1](v) })]),
       h('dt', { text: 'Ended' }), h('dd', { text: e.ended_at == null ? 'still ongoing' : fmt.datetime(e.ended_at) })),
     routeSlot));
@@ -129,7 +138,7 @@ function row(e) {
       h('td', { text: fmt.datetime(e.started_at) }),
       h('td', {}, h('span', { class: 'name-cell' }, statusIcon(k), k.label)),
       h('td', { class: 'secondary', text: where(e) }),
-      h('td', { class: 'secondary', text: e.kind === 'outage' ? CAUSE[e.class] || '–' : '–' }),
+      h('td', { class: 'secondary', text: e.kind !== 'outage' ? '–' : e.planned && !overran(e) ? 'Scheduled reboot' : CAUSE[e.class] || '–' }),
       h('td', { class: 'num', text: duration }),
       h('td', { class: 'num' }, toggle)),
     detailRow,

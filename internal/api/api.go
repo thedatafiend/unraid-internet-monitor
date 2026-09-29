@@ -121,6 +121,11 @@ type uptime struct {
 	UptimePct  *float64 `json:"uptime_pct"` // null before any data exists
 	LongestS   int64    `json:"longest_s"`
 	LastOutage *int64   `json:"last_outage_at"`
+	// Outages inside scheduled reboot windows: not counted as downtime and
+	// left out of UptimePct. The part of one that runs past its window counts
+	// as an ordinary outage.
+	PlannedS       int64 `json:"planned_s"`
+	PlannedReboots int   `json:"planned_reboots"`
 }
 
 func (s *Server) uptimeHandler(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +146,8 @@ func (s *Server) uptimeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // uptime computes IPv4 internet availability over [from, to] from outage
-// events, counting only the part of the range for which data exists.
+// events, counting only the part of the range for which data exists. Time
+// spent in scheduled reboots is excluded from both sides of the percentage.
 func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error) {
 	u := uptime{From: from, To: to}
 	first, err := s.st.FirstDataTS(ctx)
@@ -166,18 +172,35 @@ func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error
 		if ev.EndedAt != nil {
 			evEnd = *ev.EndedAt
 		}
-		d := min(evEnd, end) - max(ev.StartedAt, start)
+		a, b := max(ev.StartedAt, start), min(evEnd, end)
+		if b <= a {
+			continue
+		}
+		unplannedFrom := a
+		if ev.Planned != nil {
+			unplannedFrom = min(b, max(a, ev.Planned.End))
+			if unplannedFrom > a {
+				u.PlannedReboots++
+				u.PlannedS += unplannedFrom - a
+			}
+		}
+		d := b - unplannedFrom
 		if d <= 0 {
 			continue
 		}
 		u.Outages++
 		u.DowntimeS += d
-		u.LongestS = max(u.LongestS, evEnd-ev.StartedAt)
+		u.LongestS = max(u.LongestS, evEnd-max(ev.StartedAt, ev.PlannedUntil()))
 		started := ev.StartedAt
 		u.LastOutage = &started
 	}
-	pct := round3(100 * float64(u.MonitoredS-u.DowntimeS) / float64(u.MonitoredS))
-	u.UptimePct = &pct
+	if counted := u.MonitoredS - u.PlannedS; counted > 0 {
+		pct := round3(100 * float64(counted-u.DowntimeS) / float64(counted))
+		u.UptimePct = &pct
+	} else {
+		pct := 100.0
+		u.UptimePct = &pct
+	}
 	return u, nil
 }
 
@@ -248,6 +271,8 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		"speedtest_schedule":   c.SpeedtestSchedule,
 		"speedtest_duration_s": secs(c.SpeedtestDuration),
 		"speedtest_streams":    c.SpeedtestStreams,
+		"reboot_schedule":      c.RebootSchedule.Strings(),
+		"next_reboot":          nextReboot(c, s.now()),
 		"alerts": map[string]any{
 			"discord":        c.DiscordWebhookURL != "",
 			"min_outage_s":   secs(c.AlertMinOutage),
@@ -525,4 +550,17 @@ func writeJSONCode(w http.ResponseWriter, code int, v any) {
 
 func httpError(w http.ResponseWriter, err error, code int) {
 	writeJSONCode(w, code, map[string]string{"error": err.Error()})
+}
+
+// nextReboot returns the start and end of the next scheduled reboot window
+// (or the one in progress), or nil when none is configured.
+func nextReboot(c config.Config, now time.Time) map[string]int64 {
+	start, end, ok := c.RebootSchedule.Active(now)
+	if !ok {
+		start, end, ok = c.RebootSchedule.Next(now)
+	}
+	if !ok {
+		return nil
+	}
+	return map[string]int64{"start": start.Unix(), "end": end.Unix()}
 }

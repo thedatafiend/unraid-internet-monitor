@@ -55,6 +55,9 @@ func (e *Engine) speedLoop(ctx context.Context) {
 			return
 		}
 		next = next.Add(rand.N(maxJitter))
+		if _, end, ok := e.cfg.RebootSchedule.Active(next); ok {
+			next = end.Add(time.Minute) // don't measure a rebooting router
+		}
 		e.mu.Lock()
 		e.nextSpeedtest = next.Unix()
 		e.mu.Unlock()

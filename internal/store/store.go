@@ -103,6 +103,9 @@ var migrations = []string{
 		error          TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX speedtests_ts ON speedtests(ts);`,
+
+	// JSON model.Planned for events that started during a scheduled reboot.
+	`ALTER TABLE events ADD COLUMN planned TEXT;`,
 }
 
 // Store wraps the SQLite database.

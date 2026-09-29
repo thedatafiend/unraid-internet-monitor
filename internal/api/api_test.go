@@ -112,3 +112,32 @@ func TestUptime(t *testing.T) {
 		t.Fatalf("last outage = %d", *u.LastOutage)
 	}
 }
+
+func TestUptimeExcludesScheduledReboots(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "u.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := &Server{st: st, log: slog.Default()}
+	st.WriteMinutes(ctx, []model.MinuteStat{{TargetID: 1, TS: 1000, Sent: 1, Recv: 1}})
+	e1, e2 := int64(1200), int64(1700)
+	win := func(start, end int64) *model.Planned { return &model.Planned{Start: start, End: end, Label: "x"} }
+	for _, ev := range []*model.Event{
+		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 1100, EndedAt: &e1, Planned: win(1050, 1650)}, // all planned
+		{Kind: model.EventOutage, Scope: model.FamilyV4, StartedAt: 1400, EndedAt: &e2, Planned: win(1350, 1500)}, // 100 s planned, 200 s overrun
+	} {
+		if err := st.InsertEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u, err := s.uptime(ctx, 0, 5000, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Monitored 1000 s, 200 s planned; 200 s of the remaining 800 s down.
+	if u.PlannedReboots != 2 || u.PlannedS != 200 || u.Outages != 1 || u.DowntimeS != 200 || *u.UptimePct != 75 || u.LongestS != 200 {
+		t.Fatalf("uptime = %+v (pct %v)", u, *u.UptimePct)
+	}
+}

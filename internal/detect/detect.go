@@ -47,7 +47,7 @@ type Tick struct {
 }
 
 // Transition reports an event opening or closing. The Event pointer stays
-// owned by the detector; callers may set its ID but must not change Details
+// owned by the detector; callers may set its ID and Planned but must not change Details
 // (maps are replaced, never mutated, so snapshots stay race-free).
 type Transition struct {
 	Open  bool

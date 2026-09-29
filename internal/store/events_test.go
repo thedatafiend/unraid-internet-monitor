@@ -27,7 +27,8 @@ func TestEventsRoundTripAndOverlap(t *testing.T) {
 	if err := s.UpdateEvent(ctx, *a); err != nil {
 		t.Fatal(err)
 	}
-	b := &model.Event{Kind: model.EventDegraded, Scope: "ip4", StartedAt: 500} // still open
+	b := &model.Event{Kind: model.EventDegraded, Scope: "ip4", StartedAt: 500, // still open
+		Planned: &model.Planned{Start: 480, End: 1080, Label: "daily at 03:00 for 10m"}}
 	if err := s.InsertEvent(ctx, b); err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +40,11 @@ func TestEventsRoundTripAndOverlap(t *testing.T) {
 	if got[0].Class != model.ClassUpstream || *got[0].EndedAt != 160 || got[0].Details["down_ticks"] != float64(60) {
 		t.Fatalf("updated event = %+v", got[0])
 	}
-	if got[1].EndedAt != nil || got[1].Details == nil {
+	if got[1].EndedAt != nil || got[1].Details == nil || got[1].Planned == nil || *got[1].Planned != *b.Planned {
 		t.Fatalf("open event = %+v", got[1])
+	}
+	if got[0].Planned != nil {
+		t.Fatalf("unplanned event came back with %+v", got[0].Planned)
 	}
 	if got, _ := s.Events(ctx, 170, 400, ""); len(got) != 0 {
 		t.Fatalf("nothing overlaps 170..400, got %+v", got)
