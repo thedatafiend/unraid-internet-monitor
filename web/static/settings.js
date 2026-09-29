@@ -57,6 +57,11 @@ export async function mount(root, ctx) {
         ['Public IP check', cfg.public_ip_interval_s ? `every ${fmt.dur(cfg.public_ip_interval_s)}` : 'Off'],
         ['Speed test', cfg.speedtest_schedule === 'off' ? 'Manual only'
           : `daily at ${cfg.speedtest_schedule} (+ up to 10 min), ${cfg.speedtest_duration_s} s each way, ${cfg.speedtest_streams} connections`],
+        ['Scheduled reboots', cfg.reboot_schedule.length
+          ? cfg.reboot_schedule.join('; ') + (!cfg.next_reboot ? ''
+            : cfg.next_reboot.start * 1000 <= Date.now() ? ` · in progress until ${fmt.clock(cfg.next_reboot.end)}`
+            : ` · next ${fmt.datetime(cfg.next_reboot.start)}`)
+          : 'None. Set REBOOT_SCHEDULE if your router restarts itself on a schedule.'],
         ['Outage after', `${cfg.outage_threshold_s} s with no internet target answering`],
         ['Degraded when', `loss ≥ ${cfg.degraded_loss_pct}% or p95 > ${cfg.degraded_p95_ms} ms for ${fmt.dur(cfg.degraded_min_s)}`],
         ['Retention', `${cfg.retention_days} days`],

@@ -88,7 +88,7 @@ func (m *Manager) Enabled() bool { return m.sender != nil }
 
 // EventOpened is called when the detector opens an event.
 func (m *Manager) EventOpened(ev model.Event, now int64) {
-	if !m.Enabled() || ev.Kind != model.EventDegraded {
+	if !m.Enabled() || ev.Kind != model.EventDegraded || now < ev.PlannedUntil() {
 		return
 	}
 	m.mu.Lock()
@@ -104,14 +104,16 @@ func (m *Manager) EventOpened(ev model.Event, now int64) {
 
 // EventOngoing is called every second for each open event. An outage is
 // announced once it has lasted MinOutage; if the internet is really down the
-// alert waits in the outbox and is superseded by the recovery message.
+// alert waits in the outbox and is superseded by the recovery message. An
+// outage that began during a scheduled reboot is announced only once it has
+// lasted MinOutage past the end of the window.
 func (m *Manager) EventOngoing(ev model.Event, now int64) {
 	if !m.Enabled() || ev.Kind != model.EventOutage {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, done := m.tracked[ev.ID]; done || now-ev.StartedAt < m.minOutage() {
+	if _, done := m.tracked[ev.ID]; done || now-alertFrom(ev) < m.minOutage() {
 		return
 	}
 	if m.inWindow(model.EventOutage, now) {
@@ -135,6 +137,13 @@ func (m *Manager) EventClosed(ev model.Event, now int64) {
 	switch ev.Kind {
 	case model.EventOutage:
 		dur := ev.Duration(now)
+		if !tracked && ev.Planned != nil {
+			// Only the time past the scheduled window counts towards alerting.
+			end := ev.StartedAt + dur
+			if end <= ev.Planned.End || end-alertFrom(ev) < m.minOutage() {
+				return
+			}
+		}
 		switch {
 		case tracked && opened > 0:
 			// Cancel the "started" alert if it never got out, then report the recovery.
@@ -159,6 +168,10 @@ func (m *Manager) EventClosed(ev model.Event, now int64) {
 		}
 	}
 }
+
+// alertFrom is when an outage starts counting towards an alert: its start,
+// or the end of the scheduled reboot window it began in.
+func alertFrom(ev model.Event) int64 { return max(ev.StartedAt, ev.PlannedUntil()) }
 
 func isSuperseded(ev model.Event) bool { v, _ := ev.Details["superseded"].(bool); return v }
 

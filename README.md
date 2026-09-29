@@ -123,6 +123,36 @@ Only one or two internet targets failing is recorded as a *target unreachable*
 event, not an outage. DNS or web checks failing three times in a row while ping
 still works get their own *DNS failing* / *Web check failing* events.
 
+### Scheduled router reboots
+
+If your router restarts itself on a timer, tell the monitor when with
+`REBOOT_SCHEDULE`, so the nightly reboot isn't reported as an outage:
+
+```sh
+REBOOT_SCHEDULE=03:00                          # every day at 03:00, 10-minute window
+REBOOT_SCHEDULE=03:00/5m                       # every day at 03:00, 5-minute window
+REBOOT_SCHEDULE=mon-fri 03:00/5m; sun 04:30/15m  # several windows, separated by ";"
+```
+
+Each entry is `[days] HH:MM[/length]` in local time. Days can be left out (every
+day), or be `daily`, `weekdays`, `weekends`, or day names and ranges such as `mon`,
+`mon-fri` or `sat,sun`. The length defaults to 10 minutes (1 minute to 6 hours).
+
+An outage, slowdown or unreachable target that **starts** inside a window:
+
+- is still recorded, but is labelled **Scheduled reboot** and shaded grey on the
+  History charts;
+- sends no Discord alert while the window is open;
+- is left out of the uptime percentage and total downtime (the Events page shows
+  it separately).
+
+If the internet is still down when the window ends, the rest counts as a normal
+outage. It alerts once it has lasted `ALERT_MIN_OUTAGE` past the end of the window,
+and the message says it began during the scheduled reboot. A scheduled speed test
+that would fall inside a window is moved to just after it.
+
+If your router's clock drifts, start the window a minute or two early.
+
 ### Speed tests
 
 The daily test (04:00 local time plus a random 0–10 min delay, or on demand) runs
@@ -240,6 +270,7 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `HTTP_TARGETS` | `https://www.google.com/generate_204` | URLs fetched over a fresh connection; `off` disables |
 | `HTTP_INTERVAL` / `HTTP_TIMEOUT` | `1m` / `10s` | |
 | `PUBLIC_IP_INTERVAL` | `5m` | `0` disables |
+| `REBOOT_SCHEDULE` | unset | When your router reboots itself, e.g. `03:00/5m` or `mon-fri 03:00; sun 04:30/15m`. See [Scheduled router reboots](#scheduled-router-reboots) |
 | `SPEEDTEST_SCHEDULE` | `04:00` | Daily time (local, 24-hour) or `off` for manual tests only. Set `TZ` (Unraid does this for you) |
 | `SPEEDTEST_DURATION` / `SPEEDTEST_STREAMS` | `10s` / `6` | Per direction |
 | `SPEEDTEST_URL` | `https://speed.cloudflare.com` | Any server with Cloudflare's `__down` / `__up` API |
@@ -251,7 +282,7 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 |---|---|
 | `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime, MOS, per-target 60 s stats, DNS/web checks, public IP, last and next speed test, discovery info and warnings |
 | `GET /api/events?from=&to=&kind=` | Outages, partial failures, degradations and ISP-hop changes (default: last 7 days) |
-| `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count and longest outage (default: last 24 h) |
+| `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count and longest outage, plus time spent in scheduled reboots (default: last 24 h) |
 | `POST /api/alerts/test` | Send a test Discord message |
 | `GET /api/targets` | All targets, including disabled ones that still have history |
 | `GET /api/metrics?target=ID&from=&to=&step=` | Stored per-minute history as parallel arrays, downsampled to at most 1000 points |

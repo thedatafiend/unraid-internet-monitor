@@ -38,6 +38,14 @@ export function fill(el, ...kids) {
   return el;
 }
 
+// displayState is the status to show: "reboot" while the outage is inside
+// its scheduled reboot window, otherwise the detector's state.
+export function displayState(status) {
+  if (!status || status.state !== 'outage') return status ? status.state : 'unknown';
+  const open = (status.open_events || []).find(e => e.kind === 'outage');
+  return open && open.planned && !overran(open) ? 'reboot' : 'outage';
+}
+
 // Brand icon and tab title follow the connection state on every page.
 export function setBrandState(state) {
   const s = STATUS[state] || STATUS.unknown;
@@ -71,6 +79,7 @@ export const fmt = {
     const d = Math.floor(hr / 24), hh = hr % 24;
     return hh ? `${d}d ${hh}h` : `${d}d`;
   },
+  clock(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); },
   time(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }); },
   datetime(ts) {
     return new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -89,6 +98,7 @@ export const STATUS = {
   online: { label: 'Online', icon: '●', cls: 'good' },
   degraded: { label: 'Degraded', icon: '▲', cls: 'warning' },
   outage: { label: 'Outage', icon: '■', cls: 'critical' },
+  reboot: { label: 'Scheduled reboot', icon: '↻', cls: 'muted' },
   unknown: { label: 'Starting…', icon: '○', cls: 'muted' },
 };
 export const KIND = {
@@ -191,13 +201,25 @@ export function segmented(options, current, onPick, label) {
   return wrap;
 }
 
-// kindOf labels an event, naming DNS and web failures explicitly.
+// kindOf labels an event, naming DNS and web failures explicitly. Events
+// that began during a scheduled reboot are shown as expected unless the
+// outage ran past the end of the window.
 export function kindOf(e) {
+  let k = KIND[e.kind] || { label: e.kind, icon: '●', cls: 'muted' };
   if (e.kind === 'partial' && e.details) {
-    if (e.details.role === 'dns') return { label: 'DNS failing', icon: '▲', cls: 'warning' };
-    if (e.details.role === 'http') return { label: 'Web check failing', icon: '▲', cls: 'warning' };
+    if (e.details.role === 'dns') k = { label: 'DNS failing', icon: '▲', cls: 'warning' };
+    if (e.details.role === 'http') k = { label: 'Web check failing', icon: '▲', cls: 'warning' };
   }
-  return KIND[e.kind] || { label: e.kind, icon: '●', cls: 'muted' };
+  if (!e.planned) return k;
+  if (e.kind === 'outage') {
+    return overran(e) ? { ...k, label: 'Outage after scheduled reboot' } : { ...STATUS.reboot };
+  }
+  return { ...k, label: k.label + ' during reboot', cls: 'muted' };
+}
+
+// overran reports whether an event outlasted its scheduled reboot window.
+export function overran(e) {
+  return !!e.planned && (e.ended_at ?? now()) > e.planned.end;
 }
 
 // routeTable renders traceroute hops ({ttl, address, rtt_ms, reached}),

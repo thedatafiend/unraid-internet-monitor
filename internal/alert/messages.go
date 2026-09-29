@@ -91,9 +91,20 @@ func outageStarted(ev model.Event, now int64) Message {
 		Title:       "🔴 Internet outage",
 		Description: fmt.Sprintf("No internet target has answered since %s (%s).", ts(ev.StartedAt, "T"), ts(ev.StartedAt, "R")),
 		Color:       colorRed,
-		Fields:      []Field{{Name: "Likely cause", Value: cause(ev.Class)}},
+		Fields:      append([]Field{{Name: "Likely cause", Value: cause(ev.Class)}}, plannedField(ev)...),
 		Time:        now,
 	}
+}
+
+// plannedField explains an outage that began during a scheduled reboot but
+// outlasted it.
+func plannedField(ev model.Event) []Field {
+	if ev.Planned == nil {
+		return nil
+	}
+	return []Field{{Name: "Scheduled reboot", Value: fmt.Sprintf(
+		"This began during the scheduled router reboot (%s), but the internet was still down when that window ended at %s.",
+		ev.Planned.Label, ts(ev.Planned.End, "t"))}}
 }
 
 func outageResolved(ev model.Event, now int64) Message {
@@ -106,7 +117,7 @@ func outageResolved(ev model.Event, now int64) Message {
 		Description: fmt.Sprintf("Down for **%s**, from %s to %s.",
 			fmtDur(end-ev.StartedAt), ts(ev.StartedAt, "f"), ts(end, "T")),
 		Color:  colorGreen,
-		Fields: []Field{{Name: "Likely cause", Value: cause(ev.Class)}},
+		Fields: append([]Field{{Name: "Likely cause", Value: cause(ev.Class)}}, plannedField(ev)...),
 		Time:   now,
 	}
 	if v, ok := num(ev.Details, "gateway_down_pct"); ok {

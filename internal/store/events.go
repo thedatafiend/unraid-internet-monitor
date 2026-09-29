@@ -15,10 +15,14 @@ func (s *Store) InsertEvent(ctx context.Context, ev *model.Event) error {
 	if err != nil {
 		return err
 	}
+	planned, err := marshalPlanned(ev.Planned)
+	if err != nil {
+		return err
+	}
 	return s.db.QueryRowContext(ctx, `
-		INSERT INTO events (kind, scope, class, started_at, ended_at, details)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-		ev.Kind, ev.Scope, ev.Class, ev.StartedAt, ev.EndedAt, details).Scan(&ev.ID)
+		INSERT INTO events (kind, scope, class, started_at, ended_at, details, planned)
+		VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		ev.Kind, ev.Scope, ev.Class, ev.StartedAt, ev.EndedAt, details, planned).Scan(&ev.ID)
 }
 
 // UpdateEvent rewrites an event's class, end and details.
@@ -43,7 +47,7 @@ func (s *Store) UpdateEvent(ctx context.Context, ev model.Event) error {
 // [from, to], oldest first. Open events overlap everything after their start.
 func (s *Store) Events(ctx context.Context, from, to int64, kind string) ([]model.Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, scope, class, started_at, ended_at, details FROM events
+		SELECT id, kind, scope, class, started_at, ended_at, details, planned FROM events
 		WHERE started_at <= ?2 AND (ended_at IS NULL OR ended_at >= ?1) AND (?3 = '' OR kind = ?3)
 		ORDER BY started_at, id`, from, to, kind)
 	if err != nil {
@@ -55,8 +59,14 @@ func (s *Store) Events(ctx context.Context, from, to int64, kind string) ([]mode
 		var ev model.Event
 		var ended sql.NullInt64
 		var details string
-		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.Scope, &ev.Class, &ev.StartedAt, &ended, &details); err != nil {
+		var planned sql.NullString
+		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.Scope, &ev.Class, &ev.StartedAt, &ended, &details, &planned); err != nil {
 			return nil, err
+		}
+		if planned.Valid {
+			if err := json.Unmarshal([]byte(planned.String), &ev.Planned); err != nil {
+				return nil, fmt.Errorf("event %d planned: %w", ev.ID, err)
+			}
 		}
 		if ended.Valid {
 			ev.EndedAt = &ended.Int64
@@ -96,6 +106,14 @@ func marshalDetails(m map[string]any) (string, error) {
 		return "{}", nil
 	}
 	b, err := json.Marshal(m)
+	return string(b), err
+}
+
+func marshalPlanned(p *model.Planned) (any, error) {
+	if p == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(p)
 	return string(b), err
 }
 

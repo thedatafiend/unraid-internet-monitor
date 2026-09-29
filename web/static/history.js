@@ -1,5 +1,5 @@
 // History: stored per-minute data for a time range, with outages shaded.
-import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill, isPing } from './util.js';
+import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill, isPing, overran } from './util.js';
 import { timeChart, legend, alpha } from './charts.js';
 
 const PRESETS = [['1h', '1 h', 3600], ['6h', '6 h', 6 * 3600], ['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
@@ -96,7 +96,11 @@ export async function mount(root, ctx) {
     const col = (m, key) => { const idx = new Map(m.ts.map((t, i) => [t, i])); return xs.map(t => (idx.has(t) ? m[key][idx.get(t)] : null)); };
 
     const critical = cssVar('--critical'), warning = cssVar('--warning');
-    const outages = events.filter(e => e.kind === 'outage' && e.scope === 'ip4');
+    const allOutages = events.filter(e => e.kind === 'outage' && e.scope === 'ip4');
+    // The part of an outage inside its scheduled reboot window is expected.
+    const reboots = allOutages.filter(e => e.planned);
+    const outages = allOutages.filter(e => !e.planned || overran(e));
+    const outageStart = e => (e.planned ? Math.max(e.started_at, e.planned.end) : e.started_at);
     const degraded = events.filter(e => e.kind === 'degraded');
     // Speed tests saturate the line on purpose; mark them so their latency
     // spike isn't mistaken for a problem.
@@ -104,11 +108,13 @@ export async function mount(root, ctx) {
     const shadeIvs = [
       ...tests.map(t => ({ start: t.ts, end: t.ts + Math.max(t.duration_s, 1), color: alpha(muted, 0.22) })),
       ...degraded.map(e => ({ start: e.started_at, end: e.ended_at ?? now(), color: alpha(warning, 0.18) })),
-      ...outages.map(e => ({ start: e.started_at, end: e.ended_at ?? now(), color: alpha(critical, 0.16) })),
+      ...reboots.map(e => ({ start: e.started_at, end: Math.min(e.ended_at ?? now(), e.planned.end), color: alpha(muted, 0.3) })),
+      ...outages.map(e => ({ start: outageStart(e), end: e.ended_at ?? now(), color: alpha(critical, 0.16) })),
     ];
     fill(shadeLegend,
       ...(tests.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(muted, 0.4) } }), `Speed test (${tests.length})`)] : []),
       ...(outages.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(critical, 0.35) } }), `Outage (${outages.length})`)] : []),
+      ...(reboots.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(muted, 0.5) } }), `Scheduled reboot (${reboots.length})`)] : []),
       ...(degraded.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(warning, 0.45) } }), `Degraded (${degraded.length})`)] : []));
 
     if (!xs.length) {

@@ -2,7 +2,7 @@
 // per-target details and recent events.
 import {
   h, getJSON, fmt, now, STATUS, CAUSE, ROLE, statusIcon, mosLabel,
-  loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState, targetAddress, kindOf,
+  loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState, targetAddress, kindOf, overran, displayState,
 } from './util.js';
 import { timeChart, legend, sparkline } from './charts.js';
 import { gradeStatus, mbps } from './speed.js';
@@ -244,10 +244,11 @@ export async function mount(root, ctx) {
   }
 
   function renderHero() {
-    const s = STATUS[status.state] || STATUS.unknown;
+    const state = displayState(status);
+    const s = STATUS[state] || STATUS.unknown;
     heroIcon.replaceWith(heroIcon = statusIcon(s));
     heroLabel.textContent = s.label;
-    setBrandState(status.state);
+    setBrandState(state);
     renderHeroSub();
   }
 
@@ -256,7 +257,8 @@ export async function mount(root, ctx) {
     const parts = [];
     if (status.since) parts.push(`since ${fmt.datetime(status.since)} (${fmt.dur(now() - status.since)})`);
     const open = (status.open_events || []).find(e => e.kind === 'outage');
-    if (open && open.class) parts.push('likely cause: ' + (CAUSE[open.class] || open.class));
+    if (displayState(status) === 'reboot') parts.push('expected back by ' + fmt.clock(open.planned.end));
+    else if (open && open.class) parts.push('likely cause: ' + (CAUSE[open.class] || open.class));
     heroSub.textContent = parts.join(' · ');
     if (lastTick && Date.now() - lastTick > 10000 && es && es.readyState === EventSource.OPEN) {
       liveBadge.className = 'live';
@@ -288,7 +290,7 @@ export async function mount(root, ctx) {
       }
       fill(eventsList, ...recent.map(e => {
         const k = kindOf(e);
-        const what = e.kind === 'outage' ? CAUSE[e.class] || ''
+        const what = e.kind === 'outage' ? (e.planned && !overran(e) ? 'as scheduled' : CAUSE[e.class] || '')
           : e.kind === 'partial' ? e.scope
           : e.kind === 'ip_change' ? `${e.details.old_ipv4 || e.details.old_ipv6} → ${e.details.new_ipv4 || e.details.new_ipv6}` : '';
         return h('li', {},

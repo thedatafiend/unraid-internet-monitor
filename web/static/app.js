@@ -1,5 +1,5 @@
 // Router: one view at a time, chosen by the URL hash.
-import { h, initTheme, fill, getJSON, setBrandState } from './util.js';
+import { h, initTheme, fill, getJSON, setBrandState, displayState } from './util.js';
 import * as dashboard from './dashboard.js';
 import * as history from './history.js';
 import * as events from './events.js';
@@ -32,7 +32,7 @@ async function route() {
 }
 
 async function pollState() {
-  try { setBrandState((await getJSON('/api/status')).state); } catch { setBrandState('unknown'); }
+  try { setBrandState(displayState(await getJSON('/api/status'))); } catch { setBrandState('unknown'); }
 }
 
 initTheme(document.getElementById('themeBtn'));

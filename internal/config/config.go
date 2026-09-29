@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/thedatafiend/unraid-internet-monitor/internal/schedule"
 )
 
 // IPv6 modes.
@@ -64,6 +66,10 @@ type Config struct {
 	SpeedtestDuration time.Duration
 	SpeedtestStreams  int
 	SpeedtestURL      string // Cloudflare-compatible __down/__up server
+
+	// Scheduled router reboots: problems that start inside one of these
+	// windows are labelled as expected and not alerted while it lasts.
+	RebootSchedule schedule.Schedule
 
 	// Alerts.
 	DiscordWebhookURL string
@@ -215,6 +221,13 @@ func Load(getenv func(string) string) (Config, error) {
 		if _, err := fmt.Sscanf(c.SpeedtestSchedule, "%d:%d", &h, &m); err != nil || h < 0 || h > 23 || m < 0 || m > 59 {
 			fail("SPEEDTEST_SCHEDULE", fmt.Errorf("want HH:MM (24-hour) or off, got %q", c.SpeedtestSchedule))
 		}
+	}
+	if v := getenv("REBOOT_SCHEDULE"); strings.TrimSpace(v) != "" {
+		sch, err := schedule.Parse(v)
+		if err != nil {
+			fail("REBOOT_SCHEDULE", err)
+		}
+		c.RebootSchedule = sch
 	}
 	if c.SpeedtestStreams > 32 {
 		fail("SPEEDTEST_STREAMS", fmt.Errorf("at most 32"))

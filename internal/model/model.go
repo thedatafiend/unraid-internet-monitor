@@ -111,6 +111,23 @@ type Event struct {
 	StartedAt int64          `json:"started_at"`
 	EndedAt   *int64         `json:"ended_at"`
 	Details   map[string]any `json:"details"`
+	Planned   *Planned       `json:"planned,omitempty"` // set when it started during a scheduled reboot
+}
+
+// Planned is the scheduled reboot window an event started in.
+type Planned struct {
+	Start int64  `json:"start"`
+	End   int64  `json:"end"`
+	Label string `json:"label"` // e.g. "daily at 03:00 for 10m"
+}
+
+// PlannedUntil returns when the event's scheduled window ends, or 0 when it
+// has none.
+func (e Event) PlannedUntil() int64 {
+	if e.Planned == nil {
+		return 0
+	}
+	return e.Planned.End
 }
 
 // Duration returns the event's length in seconds, measured to now while it is open.
