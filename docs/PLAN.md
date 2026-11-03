@@ -1,7 +1,7 @@
 # Unraid Internet Monitor — Plan
 
 A small, always-on Docker app for Unraid that continuously measures the quality
-of the home internet connection to the ISP (and beyond), keeps 30 days of history,
+of the home internet connection to the ISP (and beyond), keeps 90 days of history,
 and serves a web UI reachable on the LAN and over Tailscale.
 
 ## 0. Decisions
@@ -22,7 +22,7 @@ and serves a web UI reachable on the LAN and over Tailscale.
 
 - Continuously measure latency, jitter, and packet loss, and detect outages, at 1-second resolution.
 - Tell *where* a problem is: the LAN or router, the ISP edge, or further upstream.
-- Keep 30 days of history (configurable) and keep the database small.
+- Keep 90 days of history (configurable) and keep the database small.
 - Stay light: under 1% of one CPU core at idle, about 30 MB RAM, and a single static binary.
 - Serve a fast web UI with live and historical charts on the LAN and over Tailscale.
 - Deploy on Unraid with one template and keep data in `appdata`.
@@ -61,6 +61,7 @@ library that covers nearly everything, and `tsnet` as an option later.
 | `isp` | auto: first hop that is not RFC1918 (CGNAT `100.64/10` counts as ISP) | ISP edge health |
 | `internet` | `1.1.1.1`, `8.8.8.8`, `9.9.9.9` | Anycast, three independent operators |
 | `custom` | none by default; set via `CUSTOM_TARGETS` (e.g. a game server, work VPN) | Personal relevance |
+| router WAN | auto: the gateway's UPnP IGD service (`ROUTER_UPNP`) | The ONT or modem has no address on the path, so the router's own report of its WAN port is the only view of it |
 
 ISP-hop discovery uses TTL-limited ICMP echoes (TTL 1..6). It runs at startup,
 hourly, and after every outage recovery. A change in the ISP hop is logged as an event.
@@ -85,6 +86,7 @@ so a v6-only failure is shown as a `partial` event.
 | HTTP(S) | 60 s | DNS / TCP connect / TLS / TTFB via `httptrace` to `generate_204` endpoints. Catches problems ICMP misses |
 | Public IP | 5 min | Detects ISP reconnects and IP changes (logged as event) |
 | Traceroute | on outage start + hourly | Path snapshot for "where did it break" |
+| Router WAN (UPnP) | 5 s | WAN link status, WAN address and byte counters, read from the gateway (read-only SOAP calls) |
 | Speed test | **daily at 04:00 local** (configurable, can be disabled) + manual button | Down/up throughput, **latency under load** (bufferbloat grade) |
 
 Steady-state probe traffic is about 5 packets/s, which is under 1 KB/s.
@@ -115,11 +117,14 @@ The detector is a per-second state machine over the ICMP results:
 - **Down tick:** all `internet` targets failed in that second.
 - **Outage opens** after `N=3` consecutive down ticks and **closes** after `M=3`
   consecutive up ticks. Start and end times are backdated to the first and last failed second.
-- **Classification** at open time:
+- **Classification** at open time, and again over the whole outage when it closes:
   - gateway down → `local` (LAN or router)
+  - gateway up, router reports its WAN port down → `wan` (ONT or modem)
   - gateway up, ISP hop down → `isp_edge`
   - ISP hop up (or unknown), all internet down → `upstream`
   - some internet targets down → `partial` (target-specific, not counted against uptime)
+- **Brief drop:** a run of down ticks that ends before the outage threshold. It
+  is classified the same way, stored in `blips`, charted and compared, but not alerted.
 - **Degraded** event: over a rolling 60 s window, loss is 2% or more or p95 RTT is
   above a threshold (default 100 ms, configurable), sustained for at least 2 min.
 
@@ -236,6 +241,9 @@ CREATE TABLE speedtests (
 
 CREATE TABLE public_ip (ts INTEGER PRIMARY KEY, ipv4 TEXT, ipv6 TEXT);
 
+CREATE TABLE blips (ts INTEGER, seconds INTEGER, class TEXT);  -- brief drops
+CREATE TABLE markers (id INTEGER PRIMARY KEY, ts INTEGER, label TEXT);  -- kept past retention
+
 CREATE TABLE alert_outbox (              -- persistent queue for Discord
   id INTEGER PRIMARY KEY, created_at INTEGER, kind TEXT, payload TEXT,  -- JSON
   attempts INTEGER DEFAULT 0, next_attempt_at INTEGER, sent_at INTEGER, error TEXT
@@ -264,6 +272,9 @@ min-of-min, max-of-max, max-of-p95 (conservative), and summed sent and recv for 
 | POST | `/api/speedtest` | Trigger a speed test now |
 | POST | `/api/alerts/test` | Send a test Discord message |
 | GET | `/api/stream` | **SSE**: 1 s live samples plus event open/close |
+| GET | `/api/blips?from=&to=&step=` | Brief drops per bucket, totals by cause |
+| GET/POST/DELETE | `/api/markers`, `/api/markers/{id}` | Markers for changes (JSON bodies only) |
+| GET | `/api/compare?at=&days=` | Before/after summary around a moment |
 | GET | `/api/export.csv?…` | CSV export (e.g. for ISP complaints) |
 | GET | `/healthz` | Container healthcheck |
 | GET | `/metrics` | Prometheus exposition (optional, off by default) |
@@ -296,7 +307,7 @@ targets. Environment variables take precedence.
 |---|---|---|
 | `LISTEN_ADDR` | `:8765` | Web UI/API bind |
 | `DATA_DIR` | `/data` | SQLite DB location |
-| `RETENTION_DAYS` | `30` | |
+| `RETENTION_DAYS` | `90` | |
 | `PING_TARGETS` | `1.1.1.1,8.8.8.8,9.9.9.9` | Internet targets (v4) |
 | `PING_TARGETS_V6` | `2606:4700:4700::1111,2001:4860:4860::8888,2620:fe::fe` | Internet targets (v6) |
 | `IPV6` | `auto` | `auto`, `on`, or `off` |
@@ -304,6 +315,7 @@ targets. Environment variables take precedence.
 | `GATEWAY` | `auto` | Override if auto-detect fails (e.g. bridge networking) |
 | `ISP_HOP` | `auto` | `auto`, an IP, or `off` |
 | `PING_INTERVAL` | `1s` | |
+| `ROUTER_UPNP` / `ROUTER_INTERVAL` | `auto` / `5s` | Router WAN status over UPnP: `auto`, `off` or a description URL |
 | `DNS_INTERVAL` / `HTTP_INTERVAL` | `30s` / `60s` | |
 | `SPEEDTEST_SCHEDULE` | `04:00` (`off` to disable) | Daily local time, plus 0–10 min jitter |
 | `SPEEDTEST_MAX_SECONDS` | `10` | Per direction |
@@ -395,6 +407,7 @@ docs/PLAN.md
 | **M4** | Ship it | Dockerfile, Unraid template, GitHub Actions multi-arch build to GHCR. **Deploy on Unraid and start collecting data.** |
 | **M5** | More probes | DNS, HTTP phase timing, public IP tracking (plus alert), traceroute on outage. |
 | **M6** | Speed tests | Daily Cloudflare-based test with loaded latency and bufferbloat grade, a manual run button, a UI page, and threshold alerts. |
+| **M6b** | ONT and modem visibility | Router WAN status over UPnP, a `wan` outage class, brief drops, markers and a before/after comparison, 90-day retention. |
 | **M7** | Nice-to-haves | Live IPv6 probing (if the ISP supports it), custom targets editable in the UI, daily Discord summary, Prometheus `/metrics`, CSV export, hourly rollups for 1-year history, optional basic auth, other notifiers (ntfy/Pushover). |
 
 Deploying at M4 means real data accumulates while M5–M7 are built.
@@ -410,6 +423,7 @@ Deploying at M4 means real data accumulates while M5–M7 are built.
 | M4 | **Done** | `.github/workflows/ci.yml`: gofmt, vet and race tests, then a multi-arch image pushed to GHCR (`latest` follows the default branch, semver tags from `v*` tags, and a `sha-` tag for every build). The first run passed both jobs. `unraid/internet-monitor.xml` is the template, with an icon. One-time step: GHCR creates the package as private, so its visibility must be set to public in the package settings before Unraid can pull without logging in. |
 | M5 | **Done** | DNS probe: one UDP A query per resolver (system + 1.1.1.1) every 30 s via `dnsmessage`, with exact RTT and RCODE checks. Web probe: a fresh HTTPS request every minute, with DNS/connect/TLS/TTFB phases stored in `http_sample`. Public IP every 5 min (Cloudflare trace by IP, ipify fallback), with an `ip_change` event and alert. Traceroute at outage start is stored in `traces`, and the recovery alert names the last router that answered. DNS/web failing 3 times while ping works opens its own event. UI: DNS & web card, public IP, a separate DNS & web chart, and the route on the Events page. Verified end to end with local DNS and web stand-ins, including DNS failure, outage and trace storage. |
 | M6 | **Done** | `internal/speedtest`: Cloudflare `__down`/`__up`, 6 HTTP/1.1 streams for 10 s per direction, with the first 2 s ignored for TCP slow start. Upload is counted from TCP-acknowledged bytes (`TCP_INFO`), because counting bytes handed to the socket read about 22% high in testing. Latency under load comes from 5 Hz pings to 1.1.1.1 against an idle baseline, graded A+–F on the Waveform scale. It runs daily at `SPEEDTEST_SCHEDULE` plus a 0–10 min random delay, is skipped during outages, and has a **Run now** button. Includes a Speed page, a dashboard tile, speed-test shading in History and slow-speed alerts. Verified against a throttled local server (240/30 Mbps measured as 240.1/30.1). The README gained an architecture diagram and an outage-classification diagram (Mermaid, render-checked). |
+| M6b | **Done** | Added after a failing ONT turned out to cause most outages. The ONT bridges fiber to Ethernet with no address on the path: it never shows in a traceroute, and probing common management addresses with TTL 2 found nothing. A ping to 192.168.1.1 did answer, but from 14 hops away, because the ISP routes private addresses upstream. The router (TP-Link Deco X55, MiniUPnPd 1.8) answers UPnP IGD requests: `GetCommonLinkProperties` (link status), `GetTotalBytesReceived/Sent` and `GetExternalIPAddress`, but not `GetStatusInfo` (401 Invalid Action), so there is no WAN uptime. `internal/upnp` finds the gateway's IGD (unicast and multicast search, reply and LOCATION must come from the gateway) and reads it every 5 s. Each tick carries the latest fresh reading. A dead WAN port for most of an outage classifies it `wan`, and the outage details record the share of time it was down or unknown and the bytes received meanwhile. Down runs shorter than the outage threshold are stored as brief drops. Markers (JSON-only POST, so a cross-site form can't add one) feed the Compare page: per-day rates, outages by cause, and loss outside outages. Tested against a fake MiniUPnPd router built from the real Deco's replies, but not yet against the real router: whether the Deco reports `Down` quickly when the ONT drops, or stops answering UPnP, will show at the first ONT failure or swap. |
 | M7 | Next | Nice-to-haves: IPv6 probing, custom targets in the UI, daily Discord summary, Prometheus, CSV export, 1-year rollups |
 
 ## 12. Resource budget and how it is verified

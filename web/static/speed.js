@@ -2,7 +2,7 @@
 import { h, getJSON, postJSON, fmt, now, cssVar, segmented, fill, statusIcon } from './util.js';
 import { timeChart, legend } from './charts.js';
 
-const RANGES = [['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
+const RANGES = [['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400], ['90d', '90 d', 90 * 86400]];
 
 // gradeStatus maps a bufferbloat grade to a status (icon + label, never colour alone).
 export function gradeStatus(g) {

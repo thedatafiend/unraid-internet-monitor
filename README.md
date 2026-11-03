@@ -2,7 +2,7 @@
 
 A lightweight Docker app for Unraid that continuously measures the quality of your
 internet connection. It tracks latency, jitter, packet loss, outages, DNS and web
-response times, and daily speed. It keeps 30 days of history, sends Discord alerts,
+response times, and daily speed. It keeps 90 days of history, sends Discord alerts,
 and serves a web UI you can reach on your LAN and over Tailscale.
 
 The design and milestone history are in [docs/PLAN.md](docs/PLAN.md).
@@ -15,24 +15,35 @@ The design and milestone history are in [docs/PLAN.md](docs/PLAN.md).
   into DNS, connect, TLS and server time), and tracks your public IP address.
 - Runs a **daily speed test** (plus on demand) that also measures how much
   latency rises while the line is full, and grades the bufferbloat.
-- Detects **outages**, and says whether the break is your LAN, your ISP's
-  connection or further upstream. It also detects slowdowns, and DNS or web
-  failures while ping still works. When an outage starts, it records the route so
-  you can see where packets stopped.
+- Asks your router every 5 s whether its **WAN port** (the one your ONT or modem
+  plugs into) is up, over UPnP. That is the only way to see the ONT or modem, which
+  has no address of its own on the path.
+- Detects **outages**, and says whether the break is your LAN, your ONT or modem,
+  your ISP's connection or further upstream. It also detects slowdowns, and DNS or
+  web failures while ping still works. When an outage starts, it records the route
+  so you can see where packets stopped.
+- Counts **brief drops**: seconds when every internet server went silent at once,
+  but too briefly to count as an outage. A failing ONT, modem or line often shows
+  many of these before (and between) real outages.
 
-The web UI has five pages:
+The web UI has six pages:
 
 - **Dashboard:** live state, uptime, latency, loss, call quality (MOS), last speed
   test, a live 15-minute chart, per-target stats, DNS and web checks, and recent
   events.
-- **History:** 1 hour to 30 days of latency, packet loss, jitter and DNS/web
-  response time. Outages, slowdowns and speed tests are shaded. Drag to zoom, pick
-  one target for its median/p95 band, or switch to a table.
-- **Events:** every outage, slowdown and change, with uptime totals and the
-  route recorded when each outage started.
+- **History:** 1 hour to 90 days of latency, packet loss, brief drops, jitter and
+  DNS/web response time. Outages, slowdowns and speed tests are shaded, and your
+  markers are drawn as labelled lines. Drag to zoom, pick one target for its
+  median/p95 band, or switch to a table.
+- **Events:** every outage, slowdown and change, with uptime totals, outages by
+  cause, brief drops and the route recorded when each outage started.
+- **Compare:** add a marker for a change (a new ONT, modem or router) and compare
+  the 7, 14 or 30 days before it with the days after: uptime, outages per day by
+  cause, brief drops, packet loss, latency and speed.
 - **Speed:** results over time, latency under load, a **Run now** button and a
   results table.
-- **Settings:** the discovered route, the configuration and a Discord test button.
+- **Settings:** the discovered route, what the router reports about its WAN port,
+  the configuration and a Discord test button.
 
 The UI follows your light or dark theme and works on a phone. It is served from
 the container itself, so it keeps working while your internet is down.
@@ -44,6 +55,7 @@ flowchart TB
     subgraph outside["What gets measured"]
         direction LR
         router["Your router"]
+        routerwan["Your router's WAN port<br/>UPnP"]
         ispedge["ISP edge router"]
         inet["Internet targets<br/>1.1.1.1 · 8.8.8.8 · 9.9.9.9"]
         resolvers["DNS resolvers<br/>system · 1.1.1.1"]
@@ -60,10 +72,11 @@ flowchart TB
             ipcheck["Public IP<br/>every 5 min"]
             speed["Speed test<br/>daily + Run now"]
             trace["Traceroute<br/>hourly + outage start"]
+            upnp["Router WAN status<br/>every 5 s"]
         end
         agg["Aggregator<br/>1 h live buffer · per-minute rollups"]
-        detector["Detector<br/>outage · degraded · partial"]
-        db[("SQLite · /data/monitor.db<br/>rollups · events · speed tests · routes<br/>30-day retention")]
+        detector["Detector<br/>outage · degraded · partial · brief drops"]
+        db[("SQLite · /data/monitor.db<br/>rollups · events · brief drops · speed tests · routes<br/>90-day retention")]
         alerts["Alert manager<br/>outbox · retry · digests"]
         api["HTTP server<br/>JSON API · live stream · web UI"]
     end
@@ -72,9 +85,11 @@ flowchart TB
     resolvers -.- dnsprobe
     webcheck -.- httpprobe
     cloudflare -.- ipcheck & speed
+    routerwan -.- upnp
 
     icmp & dnsprobe & httpprobe --> agg
     agg --> detector
+    upnp -- "WAN up or down" --> detector
     agg -- "once a minute" --> db
     detector -- events --> db
     trace & ipcheck & speed --> db
@@ -93,9 +108,10 @@ flowchart TB
   rolls results up into per-minute min/avg/p50/p95/p99/max, jitter and loss, which
   are written to SQLite in one transaction a minute.
 - **Detector** is a pure state machine over each second's results. It opens and
-  closes outage, degraded and single-target events. Events, speed tests, routes and
-  public-IP changes are stored next to the rollups, and anything older than the
-  retention period is pruned hourly.
+  closes outage, degraded and single-target events, and records brief drops.
+  Events, brief drops, speed tests, routes and public-IP changes are stored next to
+  the rollups, and anything older than the retention period is pruned hourly.
+  Markers are kept.
 - **Alert manager** turns events into Discord messages through a persistent
   outbox. An alert raised while the internet is down is delivered (or replaced by
   the recovery message) once it comes back.
@@ -107,17 +123,44 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    server["Unraid server"] --> router["Your router"] --> ispedge["ISP edge router"] --> inet["Internet<br/>1.1.1.1 · 8.8.8.8 · 9.9.9.9"]
+    server["Unraid server"] --> router["Your router"] --> ont["ONT or modem<br/>(seen through the router's WAN port)"] --> ispedge["ISP edge router"] --> inet["Internet<br/>1.1.1.1 · 8.8.8.8 · 9.9.9.9"]
 ```
 
 An outage starts when **every** internet target has been silent for 3 seconds. The
 monitor then looks at the hops in between for the rest of the outage:
 
-| Router | ISP edge | Likely cause shown |
-|---|---|---|
-| silent | – | **Your router or LAN** (router, modem, cabling, power) |
-| answers | silent | **Your ISP's connection** |
-| answers | answers | **ISP network or beyond** |
+| Router | Router's WAN port | ISP edge | Likely cause shown |
+|---|---|---|---|
+| silent | – | – | **Your router or LAN** (router, cabling, power) |
+| answers | reported down | – | **Your ONT or modem** (off, restarting or faulty, or its cable) |
+| answers | up or unknown | silent | **Your ISP's connection** |
+| answers | up or unknown | answers | **ISP network or beyond** |
+
+The ONT or modem bridges your line to Ethernet without an address of its own, so it
+can't be pinged and never appears in a traceroute. Instead the monitor asks the router.
+Each outage records how much of it the router reported its WAN port down, and how
+many bytes the router received from your ISP meanwhile. Nothing arriving at all points
+at the ONT, modem or line. Traffic still arriving points further into the ISP.
+
+A **brief drop** is the same failure, every internet target silent at once, lasting
+less than the 3 s outage threshold. It is classified the same way and counted, not
+alerted.
+
+### Router WAN status (UPnP)
+
+With `ROUTER_UPNP=auto` (the default) the monitor sends a UPnP search to your router,
+accepts a reply only from the router itself, and then reads its WAN link status, WAN
+address and traffic counters every `ROUTER_INTERVAL` (5 s). It only reads: it never
+adds port mappings or changes anything. UPnP must be turned on in the router. If
+discovery is blocked, set `ROUTER_UPNP` to the router's description URL, which
+`diag` prints when discovery works. The Settings page shows what the router reports,
+and the dashboard shows the WAN state and the household's current traffic.
+
+What "WAN port down" means depends on the router. Routers running MiniUPnPd, such as
+TP-Link Deco, report it when the WAN interface has lost its address, which follows the
+ONT or modem dropping the Ethernet link. Some routers also stop answering UPnP while
+their WAN is down. That time is recorded as *unknown*, and those outages stay *Your
+ISP's connection*.
 
 Only one or two internet targets failing is recorded as a *target unreachable*
 event, not an outage. DNS or web checks failing three times in a row while ping
@@ -217,7 +260,9 @@ docker run --rm --network host ghcr.io/thedatafiend/unraid-internet-monitor diag
 Look for `ICMP socket v4: raw`, `uid/gid after drop: 99/100`, your LAN interface
 and `tunnel in path: none`, your router as the gateway, and 0% loss to the
 internet targets. If `ISP hop:` says `none`, your ISP filters those probes; set
-`ISP_HOP=off`.
+`ISP_HOP=off`. `router UPnP:` names your router and its description URL, and
+`router WAN:` should say `up`. If it says `not available`, turn on UPnP in the
+router or set `ROUTER_UPNP=off`.
 
 ## Discord alerts
 
@@ -249,7 +294,7 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 |---|---|---|
 | `LISTEN_ADDR` | `:8765` | Web UI/API address |
 | `DATA_DIR` | `/data` | SQLite database directory |
-| `RETENTION_DAYS` | `30` | |
+| `RETENTION_DAYS` | `90` | Days of history kept. Markers are kept regardless |
 | `PING_TARGETS` | `1.1.1.1,8.8.8.8,9.9.9.9` | Internet targets (IPs or hostnames) |
 | `PING_TARGETS_V6` | `2606:4700:4700::1111,2001:4860:4860::8888,2620:fe::fe` | Used only when IPv6 is available |
 | `IPV6` | `auto` | `auto`, `on` or `off` |
@@ -271,6 +316,8 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 | `HTTP_INTERVAL` / `HTTP_TIMEOUT` | `1m` / `10s` | |
 | `PUBLIC_IP_INTERVAL` | `5m` | `0` disables |
 | `REBOOT_SCHEDULE` | unset | When your router reboots itself, e.g. `03:00/5m` or `mon-fri 03:00; sun 04:30/15m`. See [Scheduled router reboots](#scheduled-router-reboots) |
+| `ROUTER_UPNP` | `auto` | Read the router's WAN status over UPnP: `auto`, `off`, or the router's description URL |
+| `ROUTER_INTERVAL` | `5s` | How often the router is asked |
 | `SPEEDTEST_SCHEDULE` | `04:00` | Daily time (local, 24-hour) or `off` for manual tests only. Set `TZ` (Unraid does this for you) |
 | `SPEEDTEST_DURATION` / `SPEEDTEST_STREAMS` | `10s` / `6` | Per direction |
 | `SPEEDTEST_URL` | `https://speed.cloudflare.com` | Any server with Cloudflare's `__down` / `__up` API |
@@ -280,9 +327,12 @@ for later milestones, is in [section 7 of the plan](docs/PLAN.md#7-configuration
 
 | Endpoint | |
 |---|---|
-| `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime, MOS, per-target 60 s stats, DNS/web checks, public IP, last and next speed test, discovery info and warnings |
+| `GET /api/status` | State (`online`/`degraded`/`outage`) and since when, open events, 24 h uptime and brief drops, MOS, per-target 60 s stats, DNS/web checks, public IP, the router's WAN status, last and next speed test, discovery info and warnings |
 | `GET /api/events?from=&to=&kind=` | Outages, partial failures, degradations and ISP-hop changes (default: last 7 days) |
-| `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count and longest outage, plus time spent in scheduled reboots (default: last 24 h) |
+| `GET /api/uptime?from=&to=` | Uptime %, downtime, outage count, longest outage and outages by cause, plus time spent in scheduled reboots (default: last 24 h) |
+| `GET /api/blips?from=&to=&step=` | Brief drops per bucket, with totals by cause |
+| `GET /api/markers` · `POST /api/markers` · `DELETE /api/markers/{id}` | Markers for changes such as a new ONT. `POST` takes JSON `{"ts": unix seconds, "label": "…"}` |
+| `GET /api/compare?at=&days=14` | Uptime, outages by cause, brief drops, loss outside outages, latency and median speed for the days before and after `at` |
 | `POST /api/alerts/test` | Send a test Discord message |
 | `GET /api/targets` | All targets, including disabled ones that still have history |
 | `GET /api/metrics?target=ID&from=&to=&step=` | Stored per-minute history as parallel arrays, downsampled to at most 1000 points |

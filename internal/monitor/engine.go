@@ -44,6 +44,7 @@ type Engine struct {
 	http    *probe.HTTPProber
 	ipf     *probe.IPFetcher
 	speed   *speedtest.Runner
+	rt      *router
 
 	lastTick atomic.Int64
 
@@ -68,6 +69,7 @@ func New(cfg config.Config, p4, p6 *probe.Pinger, st *store.Store, alerts *alert
 		svc:      newServices(),
 		http:     probe.NewHTTPProber(cfg.HTTPTimeout),
 		ipf:      probe.DefaultIPFetcher(),
+		rt:       newRouter(cfg),
 		rings:    make(map[int64]*aggregate.Ring),
 		detState: detect.Snapshot{State: detect.StateUnknown},
 	}
@@ -109,6 +111,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			every(ctx, e.cfg.PublicIPInterval, func(t time.Time) { e.ipCheck(ctx, t) })
 		},
 		func() { e.speedLoop(ctx) },
+		func() { e.routerLoop(ctx) },
 	}
 	wg.Add(len(loops))
 	for _, l := range loops {
@@ -295,6 +298,7 @@ func (e *Engine) probeOnce(ctx context.Context, ts int64) {
 	if ctx.Err() != nil {
 		return
 	}
+	tick.WAN = e.wanObservation(ts)
 	e.lastTick.Store(time.Now().Unix())
 	e.publishLive(ts, rtts)
 	e.sendTick(ctx, tick)
@@ -386,6 +390,7 @@ type Status struct {
 	Targets    []TargetStatus  `json:"targets"`  // ping targets
 	Services   []ServiceStatus `json:"services"` // DNS and web targets
 	PublicIP   model.PublicIP  `json:"public_ip"`
+	Router     RouterStatus    `json:"router"`
 	Speedtest  SpeedStatus     `json:"speedtest"`
 	Info       Info            `json:"info"`
 }
@@ -398,7 +403,7 @@ func (e *Engine) Status(now time.Time) Status {
 	snap := e.detState
 	e.mu.RUnlock()
 	st := Status{Now: now.Unix(), State: snap.State, Since: snap.Since, OpenEvents: snap.Open, Info: e.Info(),
-		PublicIP: e.PublicIP(), Targets: []TargetStatus{}, Services: []ServiceStatus{},
+		PublicIP: e.PublicIP(), Router: e.RouterStatus(), Targets: []TargetStatus{}, Services: []ServiceStatus{},
 		Speedtest: e.speedStatus(context.Background())}
 	if st.OpenEvents == nil {
 		st.OpenEvents = []model.Event{}

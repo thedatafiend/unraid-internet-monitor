@@ -383,3 +383,21 @@ func TestScheduledRebootOverrunIsAlerted(t *testing.T) {
 		t.Fatalf("sent %v", got)
 	}
 }
+
+func TestRecoveryMessageForONT(t *testing.T) {
+	end := int64(220)
+	ev := model.Event{ID: 1, Kind: model.EventOutage, Class: model.ClassWAN, StartedAt: 100, EndedAt: &end,
+		Details: map[string]any{"gateway_down_pct": 0.0, "isp_down_pct": 100.0, "wan_down_pct": 95.0, "wan_rx_bytes": 0.0, "wan_rx_window_s": 110.0}}
+	m := outageResolved(ev, 230)
+	if !strings.Contains(m.Fields[0].Value, "ONT or modem") {
+		t.Fatalf("cause = %q", m.Fields[0].Value)
+	}
+	var names []string
+	for _, f := range m.Fields {
+		names = append(names, f.Name+": "+f.Value)
+	}
+	got := strings.Join(names, " | ")
+	if !strings.Contains(got, "Router's WAN port down: 95% of the time") || !strings.Contains(got, "Received from your ISP meanwhile: 0 B over 1m50s") {
+		t.Fatalf("fields = %s", got)
+	}
+}

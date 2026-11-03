@@ -1,8 +1,8 @@
 // History: stored per-minute data for a time range, with outages shaded.
-import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill, isPing, overran } from './util.js';
+import { h, getJSON, fmt, now, loadTargets, colorOf, byRole, cssVar, segmented, lineKey, fill, isPing, overran, causeBreakdown } from './util.js';
 import { timeChart, legend, alpha } from './charts.js';
 
-const PRESETS = [['1h', '1 h', 3600], ['6h', '6 h', 6 * 3600], ['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
+const PRESETS = [['1h', '1 h', 3600], ['6h', '6 h', 6 * 3600], ['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400], ['90d', '90 d', 90 * 86400]];
 const MAX_POINTS = 1000;
 
 // Same rule as the server: at most MAX_POINTS buckets, whole minutes.
@@ -68,12 +68,14 @@ export async function mount(root, ctx) {
     const step = pickStep(to - from);
     const shown = state.target === 'all' ? targets : targets.filter(t => String(t.id) === state.target);
     body.classList.add('loading');
-    let metrics, events, tests;
+    let metrics, events, tests, drops, markers;
     try {
-      [metrics, events, tests] = await Promise.all([
+      [metrics, events, tests, drops, markers] = await Promise.all([
         Promise.all(shown.map(t => getJSON(`/api/metrics?target=${t.id}&from=${from}&to=${to}&step=${step}`))),
         getJSON(`/api/events?from=${from}&to=${to}`),
         getJSON(`/api/speedtests?from=${from}&to=${to}`).catch(() => []),
+        getJSON(`/api/blips?from=${from}&to=${to}&step=${step}`).catch(() => null),
+        getJSON('/api/markers').catch(() => []),
       ]);
     } catch (err) {
       body.classList.remove('loading');
@@ -81,11 +83,11 @@ export async function mount(root, ctx) {
       return;
     }
     if (seq !== loadSeq || ctx.gone()) return;
-    render(from, to, step, shown, metrics, events, tests);
+    render(from, to, step, shown, metrics, events, tests, drops, markers.filter(m => m.ts >= from && m.ts <= to));
     body.classList.remove('loading');
   }
 
-  function render(from, to, step, shown, metrics, events, tests) {
+  function render(from, to, step, shown, metrics, events, tests, drops, markers) {
     charts.forEach(c => c.destroy());
     charts = [];
 
@@ -115,14 +117,15 @@ export async function mount(root, ctx) {
       ...(tests.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(muted, 0.4) } }), `Speed test (${tests.length})`)] : []),
       ...(outages.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(critical, 0.35) } }), `Outage (${outages.length})`)] : []),
       ...(reboots.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(muted, 0.5) } }), `Scheduled reboot (${reboots.length})`)] : []),
-      ...(degraded.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(warning, 0.45) } }), `Degraded (${degraded.length})`)] : []));
+      ...(degraded.length ? [h('span', { class: 'name-cell' }, h('span', { class: 'key-rect', style: { background: alpha(warning, 0.45) } }), `Degraded (${degraded.length})`)] : []),
+      ...markers.map(m => h('span', { class: 'name-cell' }, h('span', { class: 'key-dash' }), `${m.label} (${fmt.date(m.ts)})`)));
 
     if (!xs.length) {
       fill(body, h('section', { class: 'card empty', text: 'No data in this range yet. History is saved once a minute.' }));
       return;
     }
 
-    const common = { shade: () => shadeIvs, sync: 'history', onZoom: (a, b) => { state.from = a; state.to = b; renderFilters(); load(); } };
+    const common = { shade: () => shadeIvs, markers: () => markers, sync: 'history', onZoom: (a, b) => { state.from = a; state.to = b; renderFilters(); load(); } };
     const single = shown.length === 1 ? shown[0] : null;
     const cards = [];
     // Ping targets and DNS/web checks are charted separately: different
@@ -166,6 +169,18 @@ export async function mount(root, ctx) {
     const lossTitle = single && !singleIsPing ? 'Failed checks' : 'Packet loss';
     cards.push(chartCard(lossTitle, anyLoss ? `${lossLabel}, per ${fmt.dur(step)}` : `${lossLabel}: no ${lossTitle.toLowerCase()} in this range`,
       [{ label: lossLabel, color: lossColor, bars: true }], [lossData], { yFmt: v => fmt.pct(v), yMaxAtLeast: 1, yMax: 100, height: 160 }, false));
+
+    // Brief drops: every internet server silent in the same second(s), but
+    // shorter than an outage. Several in a row point at a failing line or modem.
+    if (!single && drops) {
+      const byTS = new Map(drops.ts.map((t, i) => [t, drops.count[i]]));
+      const total = drops.total.count;
+      cards.push(chartCard('Brief drops',
+        total ? `${total} in this range (${causeBreakdown(drops.total.by_class)}), per ${fmt.dur(step)}. Every internet server stopped answering at once, but too briefly to count as an outage.`
+          : 'None in this range. A brief drop is when every internet server stops answering at once, but too briefly to count as an outage.',
+        [{ label: 'Brief drops', color: cssVar('--serious'), bars: true }], [xs.map(t => byTS.get(t) || 0)],
+        { yFmt: v => (Number.isInteger(v) ? String(v) : ''), yMaxAtLeast: 1, height: 140 }, false));
+    }
 
     // Jitter (ping only: two DNS lookups a minute say little about jitter)
     if (!single || singleIsPing) {

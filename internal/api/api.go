@@ -60,6 +60,11 @@ func New(eng *monitor.Engine, st *store.Store, alerts *alert.Manager, log *slog.
 	mux.HandleFunc("GET /api/speedtests", s.speedtests)
 	mux.HandleFunc("POST /api/speedtest", s.runSpeedtest)
 	mux.HandleFunc("GET /api/speedtest/progress", s.speedProgress)
+	mux.HandleFunc("GET /api/blips", s.blips)
+	mux.HandleFunc("GET /api/markers", s.markers)
+	mux.HandleFunc("POST /api/markers", s.addMarker)
+	mux.HandleFunc("DELETE /api/markers/{id}", s.deleteMarker)
+	mux.HandleFunc("GET /api/compare", s.compare)
 	mux.Handle("GET /", web.Handler())
 	return mux
 }
@@ -83,14 +88,19 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn("uptime", "err", err)
 	}
+	blips, err := s.blipSummary(r.Context(), now-86400, now)
+	if err != nil {
+		s.log.Warn("brief drops", "err", err)
+	}
 	writeJSON(w, struct {
 		monitor.Status
-		Uptime24h     uptime `json:"uptime_24h"`
-		AlertsEnabled bool   `json:"alerts_enabled"`
-		Version       string `json:"version"`
-		DBSizeBytes   int64  `json:"db_size_bytes"`
-		RetentionDays int    `json:"retention_days"`
-	}{s.eng.Status(s.now()), up, s.alerts.Enabled(), s.version, size, s.retention})
+		Uptime24h     uptime      `json:"uptime_24h"`
+		Blips24h      blipSummary `json:"blips_24h"`
+		AlertsEnabled bool        `json:"alerts_enabled"`
+		Version       string      `json:"version"`
+		DBSizeBytes   int64       `json:"db_size_bytes"`
+		RetentionDays int         `json:"retention_days"`
+	}{s.eng.Status(s.now()), up, blips, s.alerts.Enabled(), s.version, size, s.retention})
 }
 
 // events lists events overlapping [from, to]; kind filters (optional).
@@ -113,19 +123,25 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 }
 
 type uptime struct {
-	From       int64    `json:"from"`
-	To         int64    `json:"to"`
-	MonitoredS int64    `json:"monitored_s"` // part of the range with data
-	DowntimeS  int64    `json:"downtime_s"`
-	Outages    int      `json:"outages"`
-	UptimePct  *float64 `json:"uptime_pct"` // null before any data exists
-	LongestS   int64    `json:"longest_s"`
-	LastOutage *int64   `json:"last_outage_at"`
+	From       int64                 `json:"from"`
+	To         int64                 `json:"to"`
+	MonitoredS int64                 `json:"monitored_s"` // part of the range with data
+	DowntimeS  int64                 `json:"downtime_s"`
+	Outages    int                   `json:"outages"`
+	UptimePct  *float64              `json:"uptime_pct"` // null before any data exists
+	LongestS   int64                 `json:"longest_s"`
+	LastOutage *int64                `json:"last_outage_at"`
+	ByClass    map[string]*classStat `json:"by_class"` // outages by likely cause
 	// Outages inside scheduled reboot windows: not counted as downtime and
 	// left out of UptimePct. The part of one that runs past its window counts
 	// as an ordinary outage.
 	PlannedS       int64 `json:"planned_s"`
 	PlannedReboots int   `json:"planned_reboots"`
+}
+
+type classStat struct {
+	Outages   int   `json:"outages"`
+	DowntimeS int64 `json:"downtime_s"`
 }
 
 func (s *Server) uptimeHandler(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +165,7 @@ func (s *Server) uptimeHandler(w http.ResponseWriter, r *http.Request) {
 // events, counting only the part of the range for which data exists. Time
 // spent in scheduled reboots is excluded from both sides of the percentage.
 func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error) {
-	u := uptime{From: from, To: to}
+	u := uptime{From: from, To: to, ByClass: map[string]*classStat{}}
 	first, err := s.st.FirstDataTS(ctx)
 	if err != nil || first == 0 {
 		return u, err
@@ -190,6 +206,13 @@ func (s *Server) uptime(ctx context.Context, from, to, now int64) (uptime, error
 		}
 		u.Outages++
 		u.DowntimeS += d
+		cs := u.ByClass[ev.Class]
+		if cs == nil {
+			cs = &classStat{}
+			u.ByClass[ev.Class] = cs
+		}
+		cs.Outages++
+		cs.DowntimeS += d
 		u.LongestS = max(u.LongestS, evEnd-max(ev.StartedAt, ev.PlannedUntil()))
 		started := ev.StartedAt
 		u.LastOutage = &started
@@ -268,6 +291,8 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		"http_targets":         c.HTTPTargets,
 		"http_interval_s":      secs(c.HTTPInterval),
 		"public_ip_interval_s": secs(c.PublicIPInterval),
+		"router_upnp":          c.RouterUPnP,
+		"router_interval_s":    secs(c.RouterInterval),
 		"speedtest_schedule":   c.SpeedtestSchedule,
 		"speedtest_duration_s": secs(c.SpeedtestDuration),
 		"speedtest_streams":    c.SpeedtestStreams,

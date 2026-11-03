@@ -62,10 +62,22 @@ func fmtDur(sec int64) string {
 	return d.String()
 }
 
+func fmtBytes(n int64) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.0f KB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+}
+
 func cause(class string) string {
 	switch class {
 	case model.ClassLocal:
 		return "Your router didn't answer either, so the problem is probably on your side: router, modem, cabling or power."
+	case model.ClassWAN:
+		return "Your router answered but reported its internet (WAN) port as down, so the ONT or modem it plugs into was probably off, restarting or faulty (or the cable between them)."
 	case model.ClassISPEdge:
 		return "Your router answered but your ISP's first router didn't, so the problem is probably your ISP's connection to you."
 	case model.ClassUpstream:
@@ -125,6 +137,14 @@ func outageResolved(ev model.Event, now int64) Message {
 	}
 	if v, ok := num(ev.Details, "isp_down_pct"); ok {
 		m.Fields = append(m.Fields, Field{Name: "ISP edge unreachable", Value: fmt.Sprintf("%.0f%% of the time", v), Inline: true})
+	}
+	if v, ok := num(ev.Details, "wan_down_pct"); ok {
+		m.Fields = append(m.Fields, Field{Name: "Router's WAN port down", Value: fmt.Sprintf("%.0f%% of the time", v), Inline: true})
+	}
+	if v, ok := num(ev.Details, "wan_rx_bytes"); ok {
+		win, _ := num(ev.Details, "wan_rx_window_s")
+		m.Fields = append(m.Fields, Field{Name: "Received from your ISP meanwhile",
+			Value: fmt.Sprintf("%s over %s", fmtBytes(int64(v)), fmtDur(int64(win))), Inline: true})
 	}
 	if hop, ok := ev.Details["trace_last_hop"].(string); ok {
 		ttl, _ := num(ev.Details, "trace_last_ttl")

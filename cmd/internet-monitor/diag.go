@@ -55,6 +55,7 @@ func diag() error {
 	fmt.Printf("ISP hop:            %s (%s)\n", orNone(info.ISPHop), orNone(info.ISPHopSource))
 	fmt.Printf("IPv6:               mode=%s available=%v\n", info.IPv6Mode, info.IPv6Available)
 
+	printRouter(ctx, cfg, info.Gateway)
 	printNetworkView()
 
 	if len(info.Trace) > 0 {
@@ -113,6 +114,38 @@ func diag() error {
 }
 
 func ms(d time.Duration) float64 { return d.Seconds() * 1000 }
+
+// printRouter reads the router's WAN status over UPnP, as the monitor does.
+func printRouter(ctx context.Context, cfg config.Config, gateway string) {
+	if cfg.RouterUPnP == config.Off {
+		fmt.Println("router UPnP:        off")
+		return
+	}
+	dev, err := monitor.FindRouter(ctx, cfg, gateway)
+	if err != nil {
+		fmt.Printf("router UPnP:        not available: %v\n", err)
+		return
+	}
+	fmt.Printf("router UPnP:        %s %s (%s)\n", dev.Manufacturer, dev.Model, orNone(dev.Server))
+	fmt.Printf("                    %s\n", dev.Location)
+	s, err := dev.Status(ctx)
+	if err != nil {
+		fmt.Printf("router WAN:         error: %v\n", err)
+		return
+	}
+	state := "unknown"
+	if up := s.Up(); up != nil && *up {
+		state = "up"
+	} else if up != nil {
+		state = "DOWN"
+	}
+	rx := "unknown"
+	if s.RxBytes != nil {
+		rx = fmt.Sprintf("%d bytes", *s.RxBytes)
+	}
+	fmt.Printf("router WAN:         %s (link %s, connection %s, WAN IP %s, received %s)\n",
+		state, orNone(s.LinkStatus), orNone(s.ConnStatus), orNone(s.ExternalIP), rx)
+}
 
 func orNone(s string) string {
 	if s == "" {

@@ -274,3 +274,126 @@ func TestRemovedTargetClosesPartial(t *testing.T) {
 		t.Fatalf("got %+v", tr)
 	}
 }
+
+func TestBlipsAreRecordedWithTheirCause(t *testing.T) {
+	d := New(DefaultConfig())
+	tr := run(d, concat(all(10, up), all(2, downISP), all(5, up), all(1, downLocal), all(5, up), all(2, downFar), all(5, up)), 10)
+	if len(tr) != 0 {
+		t.Fatalf("brief drops must not become events: %+v", tr)
+	}
+	got := d.Blips()
+	want := []model.Blip{
+		{TS: 1010, Seconds: 2, Class: model.ClassISPEdge},
+		{TS: 1017, Seconds: 1, Class: model.ClassLocal},
+		{TS: 1023, Seconds: 2, Class: model.ClassUpstream},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("blips = %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("blip %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if again := d.Blips(); len(again) != 0 {
+		t.Fatalf("Blips() should drain: %+v", again)
+	}
+}
+
+func TestOutageIsNotABlip(t *testing.T) {
+	d := New(DefaultConfig())
+	// A 1 s drop just before and inside an outage's recovery are part of the outage.
+	run(d, concat(all(10, up), all(8, downISP), all(1, up), all(1, downISP), all(5, up)), 10)
+	if b := d.Blips(); len(b) != 0 {
+		t.Fatalf("blips = %+v", b)
+	}
+}
+
+// runWAN is run with the router's WAN reading for each tick from wan(i).
+func runWAN(d *Detector, lines []line, wan func(i int, ts int64) WAN) []Transition {
+	var out []Transition
+	for i, l := range lines {
+		ts := int64(1000 + i)
+		tk := tick(ts, l, 10)
+		tk.WAN = wan(i, ts)
+		d.Add(tk)
+		out = append(out, d.Advance(ts)...)
+	}
+	return out
+}
+
+func TestRouterReportsWANDown(t *testing.T) {
+	d := New(DefaultConfig())
+	// Readings every 5 s; the router reports its WAN port down from 1012 on
+	// and received nothing while it was down.
+	tr := runWAN(d, concat(all(10, up), all(20, downISP), all(5, up)), func(i int, ts int64) WAN {
+		at := ts - ts%5
+		w := WAN{Enabled: true, Known: true, Up: at < 1010 || at >= 1030, At: at, HasRx: true, RxBytes: 5000}
+		if at < 1010 {
+			w.RxBytes = uint64(at) // traffic before the outage
+		}
+		return w
+	})
+	if len(tr) != 2 {
+		t.Fatalf("got %+v", tr)
+	}
+	ev := tr[1].Event
+	if ev.Class != model.ClassWAN {
+		t.Fatalf("class = %q, details %v", ev.Class, ev.Details)
+	}
+	if ev.Details["wan_down_pct"] != 100.0 || ev.Details["wan_rx_bytes"] != int64(0) || ev.Details["wan_rx_window_s"] != int64(15) {
+		t.Fatalf("details = %v", ev.Details)
+	}
+	if _, ok := ev.Details["wan_unknown_pct"]; ok {
+		t.Fatalf("every tick had a reading: %v", ev.Details)
+	}
+}
+
+func TestRouterWANUnknownDuringOutage(t *testing.T) {
+	d := New(DefaultConfig())
+	// The router stops answering UPnP once the outage starts.
+	tr := runWAN(d, concat(all(10, up), all(20, downISP), all(5, up)), func(i int, ts int64) WAN {
+		if ts >= 1010 && ts < 1030 {
+			return WAN{Enabled: true}
+		}
+		return WAN{Enabled: true, Known: true, Up: true, At: ts}
+	})
+	ev := tr[1].Event
+	if ev.Class != model.ClassISPEdge || ev.Details["wan_unknown_pct"] != 100.0 || ev.Details["wan_down_pct"] != 0.0 {
+		t.Fatalf("class %q details %v", ev.Class, ev.Details)
+	}
+}
+
+func TestWANUpKeepsISPEdgeClass(t *testing.T) {
+	d := New(DefaultConfig())
+	// Link up and traffic still arriving: the ISP's side, not the ONT.
+	tr := runWAN(d, concat(all(10, up), all(20, downISP), all(5, up)), func(i int, ts int64) WAN {
+		return WAN{Enabled: true, Known: true, Up: true, At: ts, HasRx: true, RxBytes: uint64(ts) * 100}
+	})
+	ev := tr[1].Event
+	if ev.Class != model.ClassISPEdge || ev.Details["wan_rx_bytes"] != int64(1900) {
+		t.Fatalf("class %q details %v", ev.Class, ev.Details)
+	}
+}
+
+func TestNoRouterNoWANDetails(t *testing.T) {
+	d := New(DefaultConfig())
+	tr := run(d, concat(all(10, up), all(20, downISP), all(5, up)), 10)
+	if _, ok := tr[1].Event.Details["wan_down_pct"]; ok {
+		t.Fatalf("details = %v", tr[1].Event.Details)
+	}
+}
+
+func TestShortONTOutageIgnoresReadingFromBefore(t *testing.T) {
+	d := New(DefaultConfig())
+	// Readings every 5 s, at 1003, 1008, ...: the one at 1008 (WAN up) is
+	// still fresh when the outage starts at 1010, but describes the time before it.
+	tr := runWAN(d, concat(all(10, up), all(12, downISP), all(5, up)), func(i int, ts int64) WAN {
+		at := ts - (ts-3)%5
+		return WAN{Enabled: true, Known: true, Up: at < 1010, At: at}
+	})
+	ev := tr[1].Event
+	if ev.Class != model.ClassWAN || ev.Details["wan_down_pct"] != 75.0 || ev.Details["wan_unknown_pct"] != 25.0 {
+		t.Fatalf("class %q details %v", ev.Class, ev.Details)
+	}
+}
