@@ -57,11 +57,19 @@ export function displayState(status) {
   return open && open.planned && !overran(open) ? 'reboot' : 'outage';
 }
 
-// Brand icon and tab title follow the connection state on every page.
+// The logo's dot, the tab icon and the tab title follow the connection
+// state on every page. The title carries the state in words too.
 export function setBrandState(state) {
   const s = STATUS[state] || STATUS.unknown;
-  const icon = document.getElementById('brandIcon');
-  if (icon) { icon.className = 'status-icon ' + s.cls; icon.textContent = s.icon; }
+  const logo = document.getElementById('brandLogo');
+  const dot = document.getElementById('brandDot');
+  if (logo && dot) {
+    dot.setAttribute('fill', cssVar('--' + s.cls) || '#898781');
+    const link = document.getElementById('brandLink');
+    if (link) link.setAttribute('aria-label', `Internet Monitor, ${s.label}`);
+    const fav = document.getElementById('favicon');
+    if (fav) fav.href = 'data:image/svg+xml,' + encodeURIComponent(new XMLSerializer().serializeToString(logo));
+  }
   document.title = (state === 'online' || !STATUS[state] ? '' : s.label + ' · ') + 'Internet Monitor';
 }
 

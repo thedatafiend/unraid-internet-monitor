@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Internet Monitor</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%230ca30c'/%3E%3C/svg%3E">
+<link id="favicon" rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon.png">
 <link rel="stylesheet" href="vendor/uPlot.min.css">
 <link rel="stylesheet" href="app.css">
 <script src="vendor/uPlot.iife.min.js" defer></script>
@@ -13,7 +14,15 @@
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="#/"><span id="brandIcon" class="status-icon muted" aria-hidden="true">○</span><span class="brand-text">Internet Monitor</span></a>
+  <a id="brandLink" class="brand" href="#/" aria-label="Internet Monitor">
+    <!-- The Unraid template's icon (unraid/icon.svg); the dot follows the connection state. -->
+    <svg id="brandLogo" class="brand-logo" viewBox="0 0 256 256" aria-hidden="true">
+      <rect width="256" height="256" rx="56" fill="#1a1a19"/>
+      <path d="M28 150 H84 L104 96 L132 188 L156 70 L176 150 H228" fill="none" stroke="#3987e5" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle id="brandDot" cx="204" cy="60" r="22" fill="#898781" stroke="#1a1a19" stroke-width="8"/>
+    </svg>
+    <span class="brand-text">Internet Monitor</span>
+  </a>
   <nav id="nav" aria-label="Sections">
     <a href="#/" data-route="">Dashboard</a>
     <a href="#/history" data-route="history">History</a>
