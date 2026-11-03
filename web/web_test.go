@@ -1,8 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -39,5 +41,23 @@ func TestHandler(t *testing.T) {
 	}
 	if r := get("/../go.mod", ""); r.Code != http.StatusNotFound {
 		t.Errorf("path traversal = %d, want 404", r.Code)
+	}
+}
+
+// The UI's logo files are copies of the Unraid template's icon.
+func TestLogoMatchesUnraidIcon(t *testing.T) {
+	for web, unraid := range map[string]string{"static/favicon.svg": "../unraid/icon.svg", "static/icon.png": "../unraid/icon.png"} {
+		a, err1 := os.ReadFile(web)
+		b, err2 := os.ReadFile(unraid)
+		if err1 != nil || err2 != nil || !bytes.Equal(a, b) {
+			t.Errorf("%s differs from %s (%v %v); copy it again", web, unraid, err1, err2)
+		}
+	}
+	page, _ := os.ReadFile("static/index.html")
+	icon, _ := os.ReadFile("../unraid/icon.svg")
+	for _, part := range bytes.Split(icon, []byte("\n"))[1:3] { // the rect and the line
+		if !bytes.Contains(page, bytes.TrimSpace(part)) {
+			t.Errorf("index.html's header logo is missing %s", bytes.TrimSpace(part))
+		}
 	}
 }
