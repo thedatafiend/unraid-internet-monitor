@@ -44,6 +44,18 @@ type Sample struct {
 type Tick struct {
 	TS      int64
 	Samples []Sample
+	WAN     WAN
+}
+
+// WAN is the router's own report of its internet (WAN) port, read over
+// UPnP, as last seen when the tick was probed.
+type WAN struct {
+	Enabled bool  // the router's WAN status is being read at all
+	Known   bool  // a recent reading said whether the WAN is up
+	Up      bool  // valid when Known
+	At      int64 // when that reading was taken
+	HasRx   bool
+	RxBytes uint64 // the router's total bytes received on its WAN port
 }
 
 // Transition reports an event opening or closing. The Event pointer stays
@@ -79,6 +91,7 @@ type Detector struct {
 	v6      runState // IPv6 internet: partial events while IPv4 is up
 	targets map[int64]*runState
 	deg     degradedState
+	blips   []model.Blip // IPv4 drops too short for an outage, until taken
 
 	state   string
 	since   int64
@@ -116,6 +129,13 @@ func (d *Detector) Advance(upTo int64) []Transition {
 	return out
 }
 
+// Blips returns the brief drops found since the last call.
+func (d *Detector) Blips() []model.Blip {
+	out := d.blips
+	d.blips = nil
+	return out
+}
+
 // Snapshot returns the current state and copies of the open events.
 func (d *Detector) Snapshot() Snapshot {
 	s := Snapshot{State: d.state, Since: d.since}
@@ -148,11 +168,19 @@ func (d *Detector) openEvents() []*model.Event {
 // observation is the gateway / ISP-hop status within one tick.
 type observation struct {
 	hasGW, gwDown, hasISP, ispDown bool
+	wan                            WAN
 }
 
 type counts struct {
+	start                  int64 // first tick of the run
 	ticks, gwDown, ispDown int
 	hasGW, hasISP          bool
+
+	// The router's own WAN readings during the run.
+	wanEnabled          bool
+	wanKnown, wanDown   int
+	rxFirst, rxLast     uint64
+	rxFirstAt, rxLastAt int64
 }
 
 func (c *counts) add(o observation) {
@@ -165,13 +193,33 @@ func (c *counts) add(o observation) {
 	if o.hasISP && o.ispDown {
 		c.ispDown++
 	}
+	// Only readings taken after the run began describe it; an earlier one
+	// still says the WAN was up before things went wrong.
+	w := o.wan
+	c.wanEnabled = c.wanEnabled || w.Enabled
+	if w.Known && w.At >= c.start {
+		c.wanKnown++
+		if !w.Up {
+			c.wanDown++
+		}
+	}
+	if w.HasRx && w.At >= c.start {
+		if c.rxFirstAt == 0 {
+			c.rxFirst, c.rxFirstAt = w.RxBytes, w.At
+		}
+		c.rxLast, c.rxLastAt = w.RxBytes, w.At
+	}
 }
 
-// classify blames the closest hop that was down for most of the outage.
+// classify blames the closest hop that was down for most of the outage. The
+// router's own report of a dead WAN port sits between the router and the
+// ISP edge: that is the ONT or modem it plugs into.
 func (c counts) classify() string {
 	switch {
 	case c.hasGW && c.gwDown*2 > c.ticks:
 		return model.ClassLocal
+	case c.wanDown*2 > c.ticks:
+		return model.ClassWAN
 	case c.hasISP && c.ispDown*2 > c.ticks:
 		return model.ClassISPEdge
 	}
@@ -185,6 +233,16 @@ func (c counts) details() map[string]any {
 	}
 	if c.hasISP {
 		m["isp_down_pct"] = pct(c.ispDown, c.ticks)
+	}
+	if c.wanEnabled {
+		m["wan_down_pct"] = pct(c.wanDown, c.ticks)
+		if c.wanKnown < c.ticks {
+			m["wan_unknown_pct"] = pct(c.ticks-c.wanKnown, c.ticks)
+		}
+		if c.rxLastAt > c.rxFirstAt && c.rxLast >= c.rxFirst {
+			m["wan_rx_bytes"] = int64(c.rxLast - c.rxFirst)
+			m["wan_rx_window_s"] = c.rxLastAt - c.rxFirstAt
+		}
 	}
 	return m
 }
@@ -213,7 +271,7 @@ func (d *Detector) process(t Tick) []Transition {
 		}
 	}
 
-	obs := observation{}
+	obs := observation{wan: t.WAN}
 	up4, has4, up6, has6 := false, false, false, false
 	down := map[string]bool{} // family -> every internet target of that family failed
 	seen := map[string]bool{}
@@ -299,11 +357,13 @@ func (d *Detector) process(t Tick) []Transition {
 }
 
 // step advances one scope's run counters and opens or closes its event.
+// For the classified scope (IPv4 internet), a down run that ends before it
+// becomes an outage is recorded as a blip.
 func (d *Detector) step(st *runState, ts int64, up bool, obs observation, openAfter int, kind, scope string, classify bool, emit func(bool, *model.Event)) {
 	if !up {
 		st.upRun = 0
 		if st.downRun == 0 {
-			st.runStart, st.run = ts, counts{}
+			st.runStart, st.run = ts, counts{start: ts}
 		}
 		st.downRun++
 		st.run.add(obs)
@@ -322,6 +382,9 @@ func (d *Detector) step(st *runState, ts int64, up bool, obs observation, openAf
 		return
 	}
 	if st.open == nil {
+		if classify && st.downRun > 0 {
+			d.blips = append(d.blips, model.Blip{TS: st.runStart, Seconds: st.downRun, Class: st.run.classify()})
+		}
 		st.downRun = 0
 		return
 	}

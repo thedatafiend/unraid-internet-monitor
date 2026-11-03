@@ -38,9 +38,14 @@ func TestLoadOverrides(t *testing.T) {
 		"DNS_SERVERS":          "system, 9.9.9.9",
 		"HTTP_TARGETS":         "off",
 		"PUBLIC_IP_INTERVAL":   "0",
+		"ROUTER_UPNP":          "OFF",
+		"ROUTER_INTERVAL":      "2s",
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if c.RouterUPnP != Off || c.RouterInterval != 2*time.Second {
+		t.Fatalf("router config: %q %v", c.RouterUPnP, c.RouterInterval)
 	}
 	if c.ListenAddr != "127.0.0.1:9000" || c.RetentionDays != 7 || c.IPv6 != IPv6Off ||
 		c.Gateway != "192.168.1.1" || c.ISPHop != Off || c.PingInterval != 2*time.Second || c.PUID != 0 {
@@ -73,11 +78,13 @@ func TestLoadErrors(t *testing.T) {
 		"DNS_SERVERS":          "dns.google",
 		"PUBLIC_IP_INTERVAL":   "10s",
 		"SPEEDTEST_SCHEDULE":   "4am",
+		"ROUTER_UPNP":          "yes",
+		"ROUTER_INTERVAL":      "100ms",
 	}))
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE", "HTTP_TARGETS", "DNS_SERVERS", "PUBLIC_IP_INTERVAL", "SPEEDTEST_SCHEDULE"} {
+	for _, key := range []string{"RETENTION_DAYS", "IPV6", "PING_INTERVAL", "CUSTOM_TARGETS", "DISCORD_WEBHOOK_URL", "ALERT_ISP_HOP_CHANGE", "HTTP_TARGETS", "DNS_SERVERS", "PUBLIC_IP_INTERVAL", "SPEEDTEST_SCHEDULE", "ROUTER_UPNP", "ROUTER_INTERVAL"} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error %q does not mention %s", err, key)
 		}
@@ -97,5 +104,16 @@ func TestLoadRebootSchedule(t *testing.T) {
 	}
 	if _, err := Load(env(map[string]string{"REBOOT_SCHEDULE": "3am"})); err == nil || !strings.Contains(err.Error(), "REBOOT_SCHEDULE") {
 		t.Fatalf("bad schedule: err = %v", err)
+	}
+}
+
+func TestRouterUPnPURL(t *testing.T) {
+	url := "http://192.168.68.1:1900/yhrjw/rootDesc.xml"
+	c, err := Load(env(map[string]string{"ROUTER_UPNP": url}))
+	if err != nil || c.RouterUPnP != url {
+		t.Fatalf("got %q, %v", c.RouterUPnP, err)
+	}
+	if Defaults().RetentionDays != 90 {
+		t.Fatalf("default retention = %d days", Defaults().RetentionDays)
 	}
 }

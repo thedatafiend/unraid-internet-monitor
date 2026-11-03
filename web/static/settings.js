@@ -38,6 +38,9 @@ export async function mount(root, ctx) {
       ])),
       card('Route to the internet', 'Each router between this server and the internet', routeView(info, traces))),
 
+    card('Router WAN port', "What your router reports about its internet port, read over UPnP. This is the only view of the ONT or modem: when the router says its WAN port is down, an outage is blamed on the ONT or modem.",
+      routerView(status.router || {}, cfg)),
+
     h('div', { class: 'grid-2' },
       card('Targets', 'Colours match the charts', h('div', { class: 'table-wrap' }, h('table', {},
         h('thead', {}, h('tr', {}, h('th', { text: 'Target' }), h('th', { text: 'Role' }), h('th', { text: 'Address' }), h('th', { text: 'Status' }))),
@@ -55,6 +58,7 @@ export async function mount(root, ctx) {
           : 'Off'],
         ['Web checks', cfg.http_targets.length ? `${cfg.http_targets.join(', ')} every ${fmt.dur(cfg.http_interval_s)}` : 'Off'],
         ['Public IP check', cfg.public_ip_interval_s ? `every ${fmt.dur(cfg.public_ip_interval_s)}` : 'Off'],
+        ['Router WAN check', cfg.router_upnp === 'off' ? 'Off' : `every ${fmt.dur(cfg.router_interval_s)} over UPnP${cfg.router_upnp === 'auto' ? '' : ' (' + cfg.router_upnp + ')'}`],
         ['Speed test', cfg.speedtest_schedule === 'off' ? 'Manual only'
           : `daily at ${cfg.speedtest_schedule} (+ up to 10 min), ${cfg.speedtest_duration_s} s each way, ${cfg.speedtest_streams} connections`],
         ['Scheduled reboots', cfg.reboot_schedule.length
@@ -108,6 +112,29 @@ function routeView(info, traces) {
     return routeTable(t.hops, (t.reason === 'outage' ? 'Traced at the start of an outage, ' : 'Traced ') + fmt.datetime(t.ts));
   }
   return h('p', { class: 'muted', text: 'No traceroute yet. Routes are traced when the ISP edge router is auto-detected and at the start of each outage.' });
+}
+
+function routerView(r, cfg) {
+  if (cfg.router_upnp === 'off') return h('p', { class: 'muted', text: 'Off (ROUTER_UPNP=off).' });
+  if (!r.found && !r.last_at) {
+    return h('div', { style: { display: 'grid', gap: '8px' } },
+      h('p', { class: 'secondary', text: 'Not available: ' + (r.error || 'looking for the router…') }),
+      h('p', { class: 'muted', text: 'Turn on UPnP in your router to enable this, or set ROUTER_UPNP to its UPnP description URL. Set ROUTER_UPNP=off to stop looking.' }));
+  }
+  const yesNo = v => (v == null ? 'Not reported' : v ? 'Up' : 'Down');
+  const rows = [
+    ['Router', [r.manufacturer, r.model].filter(Boolean).join(' ') || '–'],
+    ['WAN port', yesNo(r.wan_up) + (r.link_status ? ` (link status “${r.link_status}”)` : '')],
+  ];
+  if (r.connection_status) rows.push(['Connection', r.connection_status]);
+  if (r.wan_uptime_s != null) rows.push(['Connected for', fmt.dur(r.wan_uptime_s)]);
+  rows.push(['WAN address', r.external_ip || '–']);
+  if (r.rx_bps != null || r.tx_bps != null) rows.push(['Traffic now', `↓ ${fmt.bps(r.rx_bps)} · ↑ ${fmt.bps(r.tx_bps)} (whole household)`]);
+  if (r.rx_bytes != null) rows.push(['Received / sent', `${fmt.bytes(r.rx_bytes)} / ${r.tx_bytes != null ? fmt.bytes(r.tx_bytes) : '–'} since the router's counters started`]);
+  rows.push(['Last reading', r.last_at ? fmt.datetime(r.last_at) : '–']);
+  if (r.error) rows.push(['Last error', r.error]);
+  rows.push(['UPnP service', [r.server, r.location].filter(Boolean).join(' · ') || '–']);
+  return kv(rows);
 }
 
 function publicIPView(cur, history) {

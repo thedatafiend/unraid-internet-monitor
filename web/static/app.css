@@ -118,6 +118,7 @@ label.check { display: inline-flex; align-items: center; gap: 6px; color: var(--
 .legend button[aria-pressed="false"] { opacity: 0.4; }
 .key-line { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; flex: none; }
 .key-rect { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; flex: none; }
+.key-dash { display: inline-block; width: 0; height: 12px; border-left: 2px dashed var(--text-secondary); vertical-align: middle; flex: none; }
 
 /* Charts */
 .chart { position: relative; width: 100%; min-height: 60px; }
@@ -146,6 +147,8 @@ dl.kv dt { color: var(--text-secondary); }
 dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+table.compare td:first-child { white-space: normal; min-width: 9em; }
+table.compare th .muted { white-space: normal; font-weight: 400; }
 
 @media (max-width: 640px) {
   .top { gap: 8px; padding: 8px 12px; }
@@ -157,4 +160,8 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
   .hero-state { font-size: 36px; }
   .hero-side { justify-items: start; }
   .grid-2 { grid-template-columns: 1fr; }
+  table.compare th, table.compare td { padding: 8px 4px; }
+  table.compare td:first-child { min-width: 6.5em; }
+  table.compare td:last-child { white-space: normal; }
+  table.compare .change-word { display: none; }
 }

@@ -83,6 +83,44 @@ function shadePlugin(getIntervals) {
   };
 }
 
+// Draws a dashed vertical line with a label at each marker ({ ts, label }).
+function markerPlugin(getMarkers) {
+  return {
+    hooks: {
+      draw(u) {
+        const ms = getMarkers();
+        if (!ms.length) return;
+        const { ctx } = u;
+        const { left, top, width, height } = u.bbox;
+        const dpr = devicePixelRatio;
+        const color = cssVar('--text-secondary');
+        ctx.save();
+        ctx.font = `${11 * dpr}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left'; // uPlot leaves it right-aligned after drawing axes
+        for (const m of ms) {
+          const x = Math.round(u.valToPos(m.ts, 'x', true));
+          if (x < left || x > left + width) continue;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = dpr;
+          ctx.setLineDash([4 * dpr, 3 * dpr]);
+          ctx.beginPath();
+          ctx.moveTo(x + 0.5, top);
+          ctx.lineTo(x + 0.5, top + height);
+          ctx.stroke();
+          const tw = ctx.measureText(m.label).width;
+          const tx = x + 4 * dpr + tw > left + width ? x - 4 * dpr - tw : x + 4 * dpr; // keep the label inside
+          ctx.fillStyle = cssVar('--surface-1');
+          ctx.fillRect(tx - 2 * dpr, top + 2 * dpr, tw + 4 * dpr, 14 * dpr);
+          ctx.fillStyle = color;
+          ctx.fillText(m.label, tx, top + 3 * dpr);
+        }
+        ctx.restore();
+      },
+    },
+  };
+}
+
 // timeChart draws a time-series chart into el.
 //   series: [{ label, color, width?, bars?, fillAlpha?, tipHide? }]
 //   data:   [xs, ...ys] (unix seconds; null = gap)
@@ -91,6 +129,7 @@ function shadePlugin(getIntervals) {
 //   yMaxAtLeast: keeps tiny values from filling the whole height
 //   bands:  [[upperIdx, lowerIdx, color]] (1-based series indexes)
 //   shade:  () => [{ start, end, color }]
+//   markers: () => [{ ts, label }], drawn as labelled dashed lines
 //   sync:   cursor sync key; onZoom(from, to) enables drag-to-zoom
 export function timeChart(el, opts) {
   const height = opts.height || 220;
@@ -125,6 +164,7 @@ export function timeChart(el, opts) {
 
   const plugins = [tooltipPlugin(yFmt)];
   if (opts.shade) plugins.push(shadePlugin(opts.shade));
+  if (opts.markers) plugins.push(markerPlugin(opts.markers));
 
   const hooks = {};
   if (opts.onZoom) {

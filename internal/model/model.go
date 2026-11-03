@@ -98,9 +98,26 @@ const (
 // Outage classifications: where the break most likely is.
 const (
 	ClassLocal    = "local"    // the gateway was down too: LAN, router or modem
+	ClassWAN      = "wan"      // gateway up but it reported its WAN port down: ONT or modem
 	ClassISPEdge  = "isp_edge" // gateway up, ISP edge router down
 	ClassUpstream = "upstream" // gateway and ISP edge up, internet unreachable
 )
+
+// Blip is a moment when every IPv4 internet target went silent together,
+// but for less than the outage threshold. Class says where, as for outages.
+type Blip struct {
+	TS      int64  `json:"ts"`
+	Seconds int    `json:"seconds"`
+	Class   string `json:"class"`
+}
+
+// Marker labels a moment, such as replacing a modem, so history before and
+// after it can be compared.
+type Marker struct {
+	ID    int64  `json:"id"`
+	TS    int64  `json:"ts"`
+	Label string `json:"label"`
+}
 
 // Event is an outage, degradation or change, open while EndedAt is nil.
 type Event struct {

@@ -62,6 +62,11 @@ func (e *Engine) advance(ctx context.Context, now, delay int64) {
 		e.log.Info("event closed", "kind", ev.Kind, "scope", ev.Scope, "class", ev.Class, "duration", time.Duration(ev.Duration(now))*time.Second)
 		e.alerts.EventClosed(closed, now)
 	}
+	if bl := e.det.Blips(); len(bl) > 0 {
+		if err := e.st.InsertBlips(ctx, bl); err != nil {
+			e.log.Error("storing brief drops", "count", len(bl), "err", err)
+		}
+	}
 
 	snap := e.det.Snapshot()
 	for _, ev := range snap.Open {

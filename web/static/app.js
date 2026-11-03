@@ -5,8 +5,9 @@ import * as history from './history.js';
 import * as events from './events.js';
 import * as settings from './settings.js';
 import * as speed from './speed.js';
+import * as compare from './compare.js';
 
-const routes = { '': dashboard, history, events, speed, settings };
+const routes = { '': dashboard, history, events, compare, speed, settings };
 const view = document.getElementById('view');
 let unmount = null;
 let generation = 0;

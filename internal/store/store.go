@@ -106,6 +106,18 @@ var migrations = []string{
 
 	// JSON model.Planned for events that started during a scheduled reboot.
 	`ALTER TABLE events ADD COLUMN planned TEXT;`,
+
+	`CREATE TABLE blips (
+		ts      INTEGER NOT NULL,
+		seconds INTEGER NOT NULL,
+		class   TEXT NOT NULL
+	);
+	CREATE INDEX blips_ts ON blips(ts);
+	CREATE TABLE markers (
+		id    INTEGER PRIMARY KEY,
+		ts    INTEGER NOT NULL,
+		label TEXT NOT NULL
+	);`,
 }
 
 // Store wraps the SQLite database.
@@ -318,7 +330,8 @@ func ptr(n sql.NullFloat64) *float64 {
 
 // Prune deletes rollups and finished events older than before (unix
 // seconds), and delivered alerts older than a week, then returns freed pages
-// to the filesystem. It reports how many rollup rows were removed.
+// to the filesystem. It reports how many rollup rows were removed. Markers
+// are the user's own notes and are kept.
 func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM probe_minute WHERE ts < ?`, before)
 	if err != nil {
@@ -330,6 +343,7 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 		`DELETE FROM http_sample WHERE ts < ?`,
 		`DELETE FROM traces WHERE ts < ?`,
 		`DELETE FROM speedtests WHERE ts < ?`,
+		`DELETE FROM blips WHERE ts < ?`,
 		// Keep the newest public IP row so a change after a long gap is still detected.
 		`DELETE FROM public_ip WHERE ts < ? AND ts < (SELECT max(ts) FROM public_ip)`,
 	} {

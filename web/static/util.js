@@ -6,11 +6,22 @@ export async function getJSON(path) {
   return r.json();
 }
 
-export async function postJSON(path) {
-  const r = await fetch(path, { method: 'POST' });
+// postJSON posts data (if any) as JSON and returns the parsed reply.
+export async function postJSON(path, data) {
+  const opts = { method: 'POST' };
+  if (data !== undefined) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(data);
+  }
+  const r = await fetch(path, opts);
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error || r.statusText);
   return body;
+}
+
+export async function deleteJSON(path) {
+  const r = await fetch(path, { method: 'DELETE' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
 }
 
 // h builds an element. Strings become text nodes, so data never becomes markup.
@@ -87,8 +98,17 @@ export const fmt = {
   bytes(n) {
     if (n < 1024) return n + ' B';
     if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
-    return (n / 1048576).toFixed(1) + ' MB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(1) + ' GB';
   },
+  // bps formats a rate in bits per second.
+  bps(v) {
+    if (v == null) return '–';
+    if (v < 1e6) return (v / 1e3).toFixed(0) + ' kbps';
+    if (v < 1e9) return (v / 1e6).toFixed(v < 1e7 ? 1 : 0) + ' Mbps';
+    return (v / 1e9).toFixed(2) + ' Gbps';
+  },
+  date(ts) { return new Date(ts * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' }); },
 };
 
 export const now = () => Math.floor(Date.now() / 1000);
@@ -110,9 +130,22 @@ export const KIND = {
 };
 export const CAUSE = {
   local: 'Your router or LAN',
+  wan: 'Your ONT or modem',
   isp_edge: "Your ISP's connection",
   upstream: 'ISP network or beyond',
 };
+// Causes from nearest to furthest away.
+export const CAUSE_ORDER = ['local', 'wan', 'isp_edge', 'upstream'];
+
+// causeBreakdown lists counts by cause, nearest first: "3 Your ONT or modem · 1 …".
+export function causeBreakdown(byClass, key = 'count') {
+  return CAUSE_ORDER.filter(c => byClass && byClass[c] && byClass[c][key])
+    .map(c => `${byClass[c][key]} ${CAUSE[c].replace(/^Your /, '').replace(/^ISP's/, 'ISP')}`).join(' · ');
+}
+
+// onAccessLink counts brief drops between your router and the ISP edge:
+// the ONT or modem, the line, or the ISP's first router.
+export const onAccessLink = byClass => ((byClass && byClass.wan && byClass.wan.count) || 0) + ((byClass && byClass.isp_edge && byClass.isp_edge.count) || 0);
 export const ROLE = { gateway: 'Router', isp: 'ISP edge', internet: 'Internet', custom: 'Custom', dns: 'DNS', http: 'Web' };
 const ROLE_ORDER = { gateway: 0, isp: 1, internet: 2, custom: 3, dns: 4, http: 5 };
 

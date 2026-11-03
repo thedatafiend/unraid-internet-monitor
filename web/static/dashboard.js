@@ -3,6 +3,7 @@
 import {
   h, getJSON, fmt, now, STATUS, CAUSE, ROLE, statusIcon, mosLabel,
   loadTargets, colorOf, byRole, lineKey, cssVar, fill, setBrandState, targetAddress, kindOf, overran, displayState,
+  causeBreakdown, onAccessLink,
 } from './util.js';
 import { timeChart, legend, sparkline } from './charts.js';
 import { gradeStatus, mbps } from './speed.js';
@@ -24,17 +25,20 @@ export async function mount(root, ctx) {
   const heroSub = h('p', { class: 'hero-sub' });
   const liveBadge = h('span', { class: 'live', text: 'Connecting…' });
   const publicIP = h('span', { class: 'secondary' });
+  const routerLine = h('a', { class: 'name-cell secondary', href: '#/settings', style: { textDecoration: 'none' } });
   const hero = h('section', { class: 'card hero', 'aria-live': 'polite' },
     h('div', {}, h('h1', { class: 'hero-state' }, heroIcon, heroLabel), heroSub),
-    h('div', { class: 'hero-side' }, liveBadge, publicIP));
+    h('div', { class: 'hero-side' }, liveBadge, publicIP, routerLine));
 
   const tiles = {
     uptime: tile('Uptime, last 24 hours'),
     latency: tile('Latency to the internet'),
     loss: tile('Packet loss'),
+    drops: tile('Brief drops, 24 h'),
     mos: tile('Call quality (MOS)'),
     speed: tile('Last speed test'),
   };
+  tiles.drops.el.title = 'Seconds when every internet server stopped answering at once, but too briefly to count as an outage';
   const kpis = h('section', { class: 'kpis' }, ...Object.values(tiles).map(t => t.el));
 
   const warnBox = h('section', { class: 'callout', hidden: true });
@@ -187,6 +191,12 @@ export async function mount(root, ctx) {
     const lost = internet.reduce((a, t) => a + t.sent_60s * t.loss_pct_60s / 100, 0);
     setTile(tiles.loss, fmt.pct(sent ? 100 * lost / sent : null), 'Internet servers, last minute');
 
+    const bl = status.blips_24h || { count: 0, by_class: {} };
+    const link = onAccessLink(bl.by_class);
+    setTile(tiles.drops, String(bl.count),
+      bl.count === 0 ? 'None' : link === bl.count ? 'all on your ISP connection'
+        : link ? `${link} on your ISP connection` : causeBreakdown(bl.by_class));
+
     setTile(tiles.mos, status.mos == null ? '–' : status.mos.toFixed(2),
       status.mos == null ? '' : `${mosLabel(status.mos)} · 1 (bad) to 4.5 (best)`);
 
@@ -210,6 +220,7 @@ export async function mount(root, ctx) {
 
     const ip = status.public_ip || {};
     publicIP.textContent = ip.ipv4 || ip.ipv6 ? 'Public IP ' + [ip.ipv4, ip.ipv6].filter(Boolean).join(' · ') : '';
+    renderRouter(status.router || {});
 
     const services = byRole(status.services || []);
     servicesCard.hidden = services.length === 0;
@@ -241,6 +252,19 @@ export async function mount(root, ctx) {
         h('td', { class: 'num', text: fmt.msShort(t.jitter_60s) }),
         h('td', { class: 'num', text: fmt.pct(t.loss_pct_60s) }));
     }));
+  }
+
+  // The router's own report of its WAN port (UPnP), when it gives one.
+  function renderRouter(r) {
+    if (!r.found && !r.last_at) { fill(routerLine); return; }
+    if (!r.found || now() - r.last_at > 30) {
+      fill(routerLine, statusIcon({ icon: '○', cls: 'muted' }), 'Router not answering UPnP');
+      return;
+    }
+    if (r.wan_up == null) { fill(routerLine); return; }
+    const rates = r.rx_bps != null ? ` · ↓ ${fmt.bps(r.rx_bps)} ↑ ${fmt.bps(r.tx_bps)}` : '';
+    fill(routerLine, statusIcon(r.wan_up ? { icon: '●', cls: 'good' } : { icon: '■', cls: 'critical' }),
+      `Router WAN ${r.wan_up ? 'up' : 'down'}${rates}`);
   }
 
   function renderHero() {

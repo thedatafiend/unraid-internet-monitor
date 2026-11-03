@@ -61,6 +61,10 @@ type Config struct {
 	HTTPTimeout      time.Duration
 	PublicIPInterval time.Duration // 0 disables
 
+	// Router WAN status over UPnP.
+	RouterUPnP     string // Auto, Off, or the URL of the router's UPnP device description
+	RouterInterval time.Duration
+
 	// Speed test.
 	SpeedtestSchedule string // daily "HH:MM" local time, or "off"
 	SpeedtestDuration time.Duration
@@ -86,7 +90,7 @@ func Defaults() Config {
 	return Config{
 		ListenAddr:    ":8765",
 		DataDir:       "/data",
-		RetentionDays: 30,
+		RetentionDays: 90,
 		PingTargets:   []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"},
 		PingTargetsV6: []string{"2606:4700:4700::1111", "2001:4860:4860::8888", "2620:fe::fe"},
 		IPv6:          IPv6Auto,
@@ -109,6 +113,8 @@ func Defaults() Config {
 		HTTPInterval:     time.Minute,
 		HTTPTimeout:      10 * time.Second,
 		PublicIPInterval: 5 * time.Minute,
+		RouterUPnP:       Auto,
+		RouterInterval:   5 * time.Second,
 
 		SpeedtestSchedule: "04:00",
 		SpeedtestDuration: 10 * time.Second,
@@ -207,6 +213,8 @@ func Load(getenv func(string) string) (Config, error) {
 	duration("HTTP_INTERVAL", &c.HTTPInterval, 10*time.Second)
 	duration("HTTP_TIMEOUT", &c.HTTPTimeout, time.Second)
 	duration("PUBLIC_IP_INTERVAL", &c.PublicIPInterval, 0)
+	str("ROUTER_UPNP", &c.RouterUPnP)
+	duration("ROUTER_INTERVAL", &c.RouterInterval, time.Second)
 	str("SPEEDTEST_SCHEDULE", &c.SpeedtestSchedule)
 	duration("SPEEDTEST_DURATION", &c.SpeedtestDuration, 3*time.Second)
 	integer("SPEEDTEST_STREAMS", &c.SpeedtestStreams, 1)
@@ -267,6 +275,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.Gateway = strings.ToLower(c.Gateway)
 	c.ISPHop = strings.ToLower(c.ISPHop)
+	switch v := strings.ToLower(c.RouterUPnP); {
+	case v == Auto || v == Off:
+		c.RouterUPnP = v
+	case !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://"):
+		fail("ROUTER_UPNP", fmt.Errorf("want auto, off or the router's UPnP description URL, got %q", c.RouterUPnP))
+	}
 
 	if v := strings.TrimSpace(getenv("CUSTOM_TARGETS")); v != "" {
 		hosts, err := parseNamedHosts(v)

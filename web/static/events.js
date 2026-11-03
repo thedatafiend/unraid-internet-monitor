@@ -1,13 +1,17 @@
 // Events: outages, degradations and other changes, with summary numbers.
-import { h, getJSON, fmt, now, CAUSE, statusIcon, segmented, fill, kindOf, overran, routeTable } from './util.js';
+import { h, getJSON, fmt, now, CAUSE, statusIcon, segmented, fill, kindOf, overran, routeTable, causeBreakdown, onAccessLink } from './util.js';
 
-const RANGES = [['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400]];
+const RANGES = [['24h', '24 h', 86400], ['7d', '7 d', 7 * 86400], ['30d', '30 d', 30 * 86400], ['90d', '90 d', 90 * 86400]];
 const KINDS = [['', 'All events'], ['outage', 'Outages'], ['degraded', 'Degraded'], ['partial', 'Target unreachable'], ['ip_change', 'Public IP changes'], ['isp_hop_change', 'ISP route changes']];
 
 const DETAIL_LABELS = {
   down_ticks: ['Seconds without internet', v => String(v)],
   gateway_down_pct: ['Router unreachable', v => fmt.pct(v) + ' of the time'],
   isp_down_pct: ['ISP edge unreachable', v => fmt.pct(v) + ' of the time'],
+  wan_down_pct: ["Router's WAN port down", v => fmt.pct(v) + ' of the time (as reported by the router)'],
+  wan_unknown_pct: ['Router WAN status unknown', v => fmt.pct(v) + ' of the time (the router stopped answering UPnP)'],
+  wan_rx_bytes: ['Received from your ISP meanwhile', v => fmt.bytes(v)],
+  wan_rx_window_s: ['…measured over', v => fmt.dur(v)],
   loss_pct: ['Packet loss when it started', v => fmt.pct(v)],
   p95_ms: ['p95 latency when it started', v => fmt.ms(v)],
   peak_loss_pct: ['Worst packet loss', v => fmt.pct(v)],
@@ -46,20 +50,22 @@ export async function mount(root, ctx) {
     const sel = h('select', { class: 'btn', 'aria-label': 'Event type' }, ...KINDS.map(([v, t]) => h('option', { value: v, text: t })));
     sel.value = state.kind;
     sel.addEventListener('change', () => { state.kind = sel.value; load(); });
-    fill(filterRow, 
+    fill(filterRow,
       segmented(RANGES.map(r => [r[0], r[1]]), state.range, v => { state.range = v; renderFilters(); load(); }, 'Time range'),
-      sel);
+      sel,
+      h('a', { href: '#/compare', class: 'secondary', text: 'Compare before and after a change →' }));
   }
 
   async function load() {
     const to = now();
     const from = to - RANGES.find(r => r[0] === state.range)[2];
     frame.classList.add('loading');
-    let evs, up;
+    let evs, up, drops;
     try {
-      [evs, up] = await Promise.all([
+      [evs, up, drops] = await Promise.all([
         getJSON(`/api/events?from=${from}&to=${to}${state.kind ? '&kind=' + state.kind : ''}`),
         getJSON(`/api/uptime?from=${from}&to=${to}`),
+        getJSON(`/api/blips?from=${from}&to=${to}`).catch(() => null),
       ]);
     } catch (err) {
       frame.classList.remove('loading');
@@ -72,10 +78,12 @@ export async function mount(root, ctx) {
     fill(summary, 
       stat('Uptime', fmt.uptime(up.uptime_pct), up.monitored_s
         ? `over ${fmt.dur(up.monitored_s)} of monitoring${up.planned_reboots ? ', not counting scheduled reboots' : ''}` : 'Collecting data…'),
-      stat('Outages', String(up.outages), up.last_outage_at ? 'last ' + fmt.datetime(up.last_outage_at) : 'none in this range'),
+      stat('Outages', String(up.outages), up.outages ? causeBreakdown(up.by_class, 'outages') : 'none in this range'),
       stat('Total downtime', fmt.dur(up.downtime_s), up.planned_reboots
-        ? `plus ${fmt.dur(up.planned_s)} in ${up.planned_reboots} scheduled reboot${up.planned_reboots === 1 ? '' : 's'}` : ''),
-      stat('Longest outage', up.outages ? fmt.dur(up.longest_s) : '–', ''));
+        ? `plus ${fmt.dur(up.planned_s)} in ${up.planned_reboots} scheduled reboot${up.planned_reboots === 1 ? '' : 's'}`
+        : up.last_outage_at ? 'last outage ' + fmt.datetime(up.last_outage_at) : ''),
+      stat('Longest outage', up.outages ? fmt.dur(up.longest_s) : '–', ''),
+      drops ? stat('Brief drops', String(drops.total.count), dropsSub(drops.total)) : null);
 
     evs.reverse();
     if (!evs.length) {
@@ -89,6 +97,12 @@ export async function mount(root, ctx) {
 function stat(label, value, sub) {
   return h('section', { class: 'card tile' },
     h('div', { class: 'label', text: label }), h('div', { class: 'value', text: value }), h('div', { class: 'sub', text: sub }));
+}
+
+function dropsSub(t) {
+  if (!t.count) return 'none in this range';
+  const link = onAccessLink(t.by_class);
+  return link ? `${link} on your ISP connection` : causeBreakdown(t.by_class);
 }
 
 function where(e) {
@@ -110,7 +124,8 @@ function plannedText(e) {
 
 function row(e) {
   const k = kindOf(e);
-  const details = Object.entries(e.details || {}).filter(([key]) => DETAIL_LABELS[key]);
+  const d = e.details || {};
+  const details = Object.keys(DETAIL_LABELS).filter(key => key in d).map(key => [key, d[key]]);
   const routeSlot = h('div');
   const detailRow = h('tr', { class: 'details', hidden: true },
     h('td', { colspan: 6 }, h('dl', { class: 'kv' },
